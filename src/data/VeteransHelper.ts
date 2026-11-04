@@ -1,7 +1,7 @@
 import UMDatabaseWrapper from "../data/UMDatabaseWrapper";
 import { Veteran, OptimizerConfig } from "../pages/VeteransPage/types";
 
-type FactorItem = {
+export type FactorItem = {
     name: string;
     level: number;
     isGold: boolean;
@@ -165,7 +165,11 @@ const sumSharedRelationPoints = (setA: Set<number>, setB: Set<number>, setC?: Se
     return total;
 };
 
-export const calculatePairAffinity = (veteran1: Veteran, veteran2: Veteran): number => {
+type AffinityVeteran = Pick<Veteran, "card_id"> & {
+    win_saddle_id_array?: number[];
+};
+
+export const calculatePairAffinity = (veteran1: AffinityVeteran, veteran2: AffinityVeteran): number => {
     const id1 = Math.floor(veteran1.card_id / 100);
     const id2 = Math.floor(veteran2.card_id / 100);
     const rel1 = UMDatabaseWrapper.charaRelationTypes[id1] ?? new Set<number>();

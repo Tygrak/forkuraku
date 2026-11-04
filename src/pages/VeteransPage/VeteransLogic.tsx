@@ -1,6 +1,8 @@
-import { Veteran, BaseFilter, SortOption, SortDirection, getFilterStats, getFilterStarOptions } from "./types";
+import { Veteran, BaseFilter, SortOption, SortDirection, CustomScoringConfig, getFilterStats, getFilterStarOptions } from "./types";
+import UMDatabaseWrapper from "../../data/UMDatabaseWrapper";
 import { aggregateFactors, getFactorCategory, calculateAffinity } from "../../data/VeteransHelper";
 import { getCardName } from "./VeteransUIHelper";
+import { calculateCustomScore, createDefaultCustomScoringConfig, CustomScoreContext } from "./customScoring";
 
 
 const matchesFilter = (veteran: Veteran, filter: BaseFilter, categoryId: number): boolean => {
@@ -26,7 +28,13 @@ const matchesFilter = (veteran: Veteran, filter: BaseFilter, categoryId: number)
     }
 };
 
-const calculateSortScore = (veteran: Veteran, sortMode: SortOption, affinityCharaId?: number | null): number => {
+const calculateSortScore = (
+    veteran: Veteran,
+    sortMode: SortOption,
+    affinityCharaId?: number | null,
+    customScoringConfig?: CustomScoringConfig,
+    customScoreContext?: CustomScoreContext,
+): number => {
     const aggregated = aggregateFactors(veteran);
 
     const sumStars = (condition: (f: typeof aggregated[0]) => boolean) => {
@@ -42,24 +50,46 @@ const calculateSortScore = (veteran: Veteran, sortMode: SortOption, affinityChar
         case 'legacy_skills': return sumStars(f => f.category === 5 && f.isGold);
         case 'score': return veteran.rank_score;
         case 'affinity': return affinityCharaId ? calculateAffinity(veteran, affinityCharaId) : 0;
+        case 'custom': return calculateCustomScore(
+            veteran,
+            customScoringConfig ?? createDefaultCustomScoringConfig(),
+            customScoreContext,
+        ).total;
         case 'none': default: return 0;
     }
 };
 
-export const getAvailableStats = (veterans: Veteran[], categoryId: number): string[] => {
+export const getAvailableStats = (
+    veterans: Veteran[],
+    categoryId: number,
+    includeAllFactors = false,
+): string[] => {
     const statToMinFactorId = new Map<string, number>();
+
+    const addFactor = (name: string, factorId: number) => {
+        const currentMin = statToMinFactorId.get(name);
+        if (currentMin === undefined || factorId < currentMin) {
+            statToMinFactorId.set(name, factorId);
+        }
+    };
 
     veterans.forEach(veteran => {
         const aggregated = aggregateFactors(veteran);
         aggregated
             .filter(f => getFactorCategory(f.factorId) === categoryId)
-            .forEach(f => {
-                const currentMin = statToMinFactorId.get(f.name);
-                if (currentMin === undefined || f.factorId < currentMin) {
-                    statToMinFactorId.set(f.name, f.factorId);
-                }
-            });
+            .forEach(f => addFactor(f.name, f.factorId));
     });
+
+    if (includeAllFactors) {
+        const textData = UMDatabaseWrapper.textData[147] ?? {};
+        for (const [indexText, text] of Object.entries(textData)) {
+            const factorId = Number(indexText);
+            if (!Number.isFinite(factorId) || getFactorCategory(factorId) !== categoryId || !text.text) {
+                continue;
+            }
+            addFactor(text.text, factorId);
+        }
+    }
 
     const stats = Array.from(statToMinFactorId.keys());
     if (categoryId === 1 || categoryId === 2) {
@@ -86,11 +116,19 @@ export const applyFiltersAndSort = (
     direction: SortDirection,
     nameSearch?: string,
     affinityCharaId?: number | null,
+    parentCharaIds?: number[],
+    customScoringConfig?: CustomScoringConfig,
+    customScoreContext?: CustomScoreContext,
 ): Veteran[] => {
     let result = veterans;
 
     if (affinityCharaId) {
         result = result.filter(v => Math.floor(v.card_id / 100) !== affinityCharaId);
+    }
+
+    if (parentCharaIds && parentCharaIds.length > 0) {
+        const selectedCharacters = new Set(parentCharaIds);
+        result = result.filter(v => selectedCharacters.has(Math.floor(v.card_id / 100)));
     }
 
     if (nameSearch && nameSearch.trim()) {
@@ -112,8 +150,8 @@ export const applyFiltersAndSort = (
 
     if (sort !== 'none') {
         result.sort((a, b) => {
-            const scoreA = calculateSortScore(a, sort, affinityCharaId);
-            const scoreB = calculateSortScore(b, sort, affinityCharaId);
+            const scoreA = calculateSortScore(a, sort, affinityCharaId, customScoringConfig, customScoreContext);
+            const scoreB = calculateSortScore(b, sort, affinityCharaId, customScoringConfig, customScoreContext);
             if (scoreB !== scoreA) {
                 return direction === 'desc' ? scoreB - scoreA : scoreA - scoreB;
             }

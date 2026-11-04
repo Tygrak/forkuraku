@@ -39,6 +39,7 @@ const VeteransSorter: React.FC<VeteransSorterProps> = ({
                 <option value="legacy_common">Legacy Common Stars</option>
                 <option value="legacy_skills">Legacy Skills Stars</option>
                 <option value="score">Score</option>
+                <option value="custom">Custom Score</option>
                 <option value="affinity" disabled={!affinityCharaId}>
                     {affinityCharaId
                         ? `Affinity: ${UMDatabaseWrapper.charas[affinityCharaId]?.name ?? affinityCharaId}`

@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Modal } from "react-bootstrap";
 import "./VeteransPage.css";
 import "../../features/umalogs/components/HorseProfile.css";
-import { Veteran } from "./types";
+import { SparkDisplayMode, Veteran } from "./types";
 import {
     aggregateFactors,
     calculateAffinity,
@@ -20,6 +20,17 @@ import { STRATEGY_COLORS, STRATEGY_NAMES } from "../MultiRacePage/components/Win
 
 const GRADE_LETTERS: Record<number, string> = { 1: "G", 2: "F", 3: "E", 4: "D", 5: "C", 6: "B", 7: "A", 8: "S" };
 const STYLE_ICON_NAME: Record<number, string> = { 1: "front", 2: "pace", 3: "late", 4: "end", 5: "front" };
+
+type GroupedFactor = {
+    category: number;
+    name: string;
+    factorId: number;
+    isGold: boolean;
+    totalLevel: number;
+    count: number;
+    counts: Record<"self" | "gp1" | "gp2", number>;
+    levels: Record<"self" | "gp1" | "gp2", number>;
+};
 interface VeteranCardProps {
     veteran: Veteran;
     config: any;
@@ -28,6 +39,9 @@ interface VeteranCardProps {
     legacyParent2?: Veteran | null;
     onSelectForSlot?: (veteran: Veteran, slot: "p1" | "p2") => void;
     treeAffinities?: Record<"self" | "gp1" | "gp2", number>;
+    customScore?: number;
+    sparkDisplayMode?: SparkDisplayMode;
+    highlightedFactorKeys?: Set<number>;
 }
 
 const VeteranCard: React.FC<VeteranCardProps> = ({
@@ -38,13 +52,50 @@ const VeteranCard: React.FC<VeteranCardProps> = ({
     legacyParent2,
     onSelectForSlot,
     treeAffinities,
+    customScore,
+    sparkDisplayMode = "separate",
+    highlightedFactorKeys,
 }) => {
     const [showRaces, setShowRaces] = useState(false);
     const [showProfile, setShowProfile] = useState(false);
+    const [friendCodeCopied, setFriendCodeCopied] = useState(false);
 
     const parent1 = veteran.succession_chara_array.find(p => p.position_id === 10);
     const parent2 = veteran.succession_chara_array.find(p => p.position_id === 20);
-    const aggregated = aggregateFactors(veteran);
+    const aggregated = useMemo(() => aggregateFactors(veteran), [veteran]);
+    const groupedFactors = useMemo(() => {
+        if (sparkDisplayMode === "separate") return [];
+
+        const groups = new Map<string, GroupedFactor>();
+
+        for (const factor of aggregated) {
+            const key = `${factor.category}:${factor.name}`;
+            let group = groups.get(key);
+            if (!group) {
+                group = {
+                    category: factor.category,
+                    name: factor.name,
+                    factorId: factor.factorId,
+                    isGold: factor.isGold,
+                    totalLevel: 0,
+                    count: 0,
+                    counts: { self: 0, gp1: 0, gp2: 0 },
+                    levels: { self: 0, gp1: 0, gp2: 0 },
+                };
+                groups.set(key, group);
+            }
+
+            group.totalLevel += factor.level;
+            group.count += 1;
+            group.counts[factor.sourceSlot] += 1;
+            group.levels[factor.sourceSlot] += factor.level;
+            if (factor.isGold) group.isGold = true;
+        }
+
+        return Array.from(groups.values());
+    }, [aggregated, sparkDisplayMode]);
+    const isSearchHighlighted = (factorId: number): boolean =>
+        highlightedFactorKeys?.has(Math.floor(factorId / 100)) ?? false;
     const rankInfo = getRankIcon(veteran.rank_score);
     const strategyColor = STRATEGY_COLORS[veteran.running_style] ?? "#718096";
     const strategyName = STRATEGY_NAMES[veteran.running_style] ?? `Strategy ${veteran.running_style}`;
@@ -107,6 +158,20 @@ const VeteranCard: React.FC<VeteranCardProps> = ({
         const el = e.currentTarget;
         if (el.src !== fallbackIconUrl) el.src = fallbackIconUrl;
         else el.style.display = "none";
+    };
+
+    const copyFriendCode = async (e: React.MouseEvent<HTMLButtonElement>) => {
+        e.stopPropagation();
+        const friendCode = veteran.uma_moe_account_id;
+        if (!friendCode) return;
+
+        try {
+            await navigator.clipboard.writeText(friendCode);
+            setFriendCodeCopied(true);
+            window.setTimeout(() => setFriendCodeCopied(false), 1500);
+        } catch {
+            // Clipboard access can be unavailable; leave the label unchanged.
+        }
     };
 
     const renderSkillChip = (id: number) => {
@@ -183,10 +248,32 @@ const VeteranCard: React.FC<VeteranCardProps> = ({
 
                 <div className="vet-content-col">
                     <div className="vet-header">
-                        <span className="vet-name">
-                            {formatCardName(getCardName(veteran.card_id))}
-                        </span>
+                        <div className="vet-title-row">
+                            <span className="vet-name">
+                                {formatCardName(getCardName(veteran.card_id))}
+                            </span>
+                            {customScore !== undefined && (
+                                <span
+                                    className="vet-custom-score-badge"
+                                    title="Custom score"
+                                >
+                                    {customScore.toLocaleString(undefined, { maximumFractionDigits: 2 })} pts
+                                </span>
+                            )}
+                        </div>
                         <div className="vet-meta-badges">
+                            {veteran.uma_moe_account_id && (
+                                <button
+                                    type="button"
+                                    className="vet-badge friend-code vet-friend-code-button"
+                                    title="Copy friend code"
+                                    onClick={copyFriendCode}
+                                >
+                                    {friendCodeCopied
+                                        ? "Copied!"
+                                        : `${veteran.uma_moe_trainer_name?.trim() || "Trainer"} - ${veteran.uma_moe_account_id}`}
+                                </button>
+                            )}
                             {onSelectForSlot && (() => {
                                 const hasMain = affinityCharaId != null;
                                 const baseAff = hasMain ? calculateAffinity(veteran, affinityCharaId!) : 0;
@@ -225,35 +312,122 @@ const VeteranCard: React.FC<VeteranCardProps> = ({
                     </div>
                     {aggregated.length === 0 ? (
                         <span className="vet-no-factors">No factors</span>
-                    ) : (
+                    ) : sparkDisplayMode === "separate" ? (
                         <div className="factor-groups">
                             {[1, 2, 3, 4, 5].map(catId => {
-                                const group = aggregated.filter(f => getFactorCategory(f.factorId) === catId);
+                                const group = aggregated
+                                    .filter(f => getFactorCategory(f.factorId) === catId)
+                                    .sort((a, b) => {
+                                        if (catId === 1 || catId === 2) {
+                                            const sourceOrder = { self: 0, gp1: 1, gp2: 2 };
+                                            return sourceOrder[a.sourceSlot] - sourceOrder[b.sourceSlot];
+                                        }
+                                        return Number(isSearchHighlighted(b.factorId)) - Number(isSearchHighlighted(a.factorId));
+                                    });
                                 if (group.length === 0) return null;
                                 return (
                                     <div className="factor-group" key={catId}>
                                         <div className="factor-pills">
-                                            {group.map((factor, idx) => (
-                                                <span key={idx} className={`factor-pill${factor.isGold ? " gold" : ""}`}>
-                                                    <span style={{ color: getFactorColor(factor.factorId, config) }}>
-                                                        {factor.name}
+                                            {group.map((factor, idx) => {
+                                                const highlighted = highlightedFactorKeys?.has(Math.floor(factor.factorId / 100));
+                                                return (
+                                                    <span
+                                                        key={idx}
+                                                        className={`factor-pill${factor.isGold ? " gold" : ""}${highlighted ? " factor-pill--search-match" : ""}`}
+                                                    >
+                                                        <span style={{ color: getFactorColor(factor.factorId, config) }}>
+                                                            {factor.name}
+                                                        </span>
+                                                        <span className="pill-stars">
+                                                            {renderStars(factor.level, factor.isGold)}
+                                                        </span>
+                                                        {treeAffinities && (() => {
+                                                            const chance = calculateSparkChance(
+                                                                factor.category,
+                                                                factor.factorId,
+                                                                factor.level,
+                                                                treeAffinities[factor.sourceSlot],
+                                                            );
+                                                            return chance !== null ? (
+                                                                <span className="vet-factor-chance">({chance.toFixed(2)}%)</span>
+                                                            ) : null;
+                                                        })()}
                                                     </span>
-                                                    <span className="pill-stars">
-                                                        {renderStars(factor.level, factor.isGold)}
-                                                    </span>
-                                                    {treeAffinities && (() => {
-                                                        const chance = calculateSparkChance(
-                                                            factor.category,
-                                                            factor.factorId,
-                                                            factor.level,
-                                                            treeAffinities[factor.sourceSlot],
-                                                        );
-                                                        return chance !== null ? (
-                                                            <span className="vet-factor-chance">({chance.toFixed(2)}%)</span>
-                                                        ) : null;
-                                                    })()}
-                                                </span>
-                                            ))}
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div className="factor-groups">
+                            {[1, 2, 3, 4, 5].map(catId => {
+                                const group = groupedFactors
+                                    .filter(f => f.category === catId)
+                                    .sort((a, b) => {
+                                        if (catId === 1 || catId === 2) {
+                                            const sourceRank = (factor: GroupedFactor) =>
+                                                factor.counts.self > 0 ? 0 : factor.counts.gp1 > 0 ? 1 : factor.counts.gp2 > 0 ? 2 : 3;
+                                            return sourceRank(a) - sourceRank(b);
+                                        }
+                                        return Number(isSearchHighlighted(b.factorId)) - Number(isSearchHighlighted(a.factorId));
+                                    });
+                                if (group.length === 0) return null;
+                                return (
+                                    <div className="factor-group" key={catId}>
+                                        <div className="factor-pills">
+                                            {group.map((factor, idx) => {
+                                                const highlighted = highlightedFactorKeys?.has(Math.floor(factor.factorId / 100));
+                                                const pillClass = `factor-pill${factor.isGold ? " gold" : ""}${highlighted ? " factor-pill--search-match" : ""}`;
+
+                                                if (sparkDisplayMode === "combined") {
+                                                    return (
+                                                        <span
+                                                            key={idx}
+                                                            className={`${pillClass} factor-pill--combined`}
+                                                            title={`${factor.count} copies, ${factor.totalLevel}★ total`}
+                                                        >
+                                                            <span style={{ color: getFactorColor(factor.factorId, config) }}>
+                                                                {factor.name}
+                                                            </span>
+                                                            <span className="pill-total-stars">{factor.totalLevel}★</span>
+                                                            {factor.count > 1 && (
+                                                                <span className="pill-copy-count">×{factor.count}</span>
+                                                            )}
+                                                        </span>
+                                                    );
+                                                }
+
+                                                const ownerCount = Number(factor.counts.self > 0)
+                                                    + Number(factor.counts.gp1 > 0)
+                                                    + Number(factor.counts.gp2 > 0);
+
+                                                if (sparkDisplayMode === "gp") {
+                                                    return (
+                                                        <span
+                                                            key={idx}
+                                                            className={`${pillClass} factor-pill--gp`}
+                                                            title={[
+                                                                `Parent: ${factor.counts.self} copies (${factor.levels.self}★)`,
+                                                                `GP1: ${factor.counts.gp1} copies (${factor.levels.gp1}★)`,
+                                                                `GP2: ${factor.counts.gp2} copies (${factor.levels.gp2}★)`,
+                                                                `Total: ${factor.totalLevel}★`,
+                                                            ].join("\n")}
+                                                        >
+                                                            <span style={{ color: getFactorColor(factor.factorId, config) }}>
+                                                                {factor.name}
+                                                            </span>
+                                                            <span className="pill-parent-stars">{factor.levels.self}★</span>
+                                                            <span className="pill-gp-summary">
+                                                                ({factor.totalLevel}★ {ownerCount}/3)
+                                                            </span>
+                                                        </span>
+                                                    );
+                                                }
+
+                                                return null;
+                                            })}
                                         </div>
                                     </div>
                                 );
@@ -307,6 +481,11 @@ const VeteranCard: React.FC<VeteranCardProps> = ({
                                 <span className="fup-rank-score">{veteran.rank_score.toLocaleString()}</span>
                             </div>
                             <div className="fup-training-wins">Career mode wins: {veteran.wins.toLocaleString()}</div>
+                            {veteran.uma_moe_account_id && (
+                                <div className="vet-fup-meta">
+                                    {veteran.uma_moe_trainer_name?.trim() || "Trainer"} - {veteran.uma_moe_account_id}
+                                </div>
+                            )}
                             <div className="vet-fup-meta">
                                 Scenario {veteran.scenario_id} - Created {createdAtLabel}
                             </div>

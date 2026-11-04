@@ -1,13 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "./VeteransPage/VeteransPage.css";
-import { Alert, Button, Container, Form, InputGroup } from "react-bootstrap";
+import { Alert, Button, ButtonGroup, Container, Form, InputGroup } from "react-bootstrap";
 import { useAuth } from "../auth/AuthContext";
 import type { AccountHorseActVerificationStatusResponse, AccountVeteranSnapshotSummary } from "../auth/authShared";
-import { Veteran, BaseFilter, BluesFilter, AptitudeFilter, UniquesFilter, RacesFilter, SkillsFilter, SortOption, SortDirection, getFilterStats, getFilterStarOptions } from "./VeteransPage/types";
+import { Veteran, BaseFilter, BluesFilter, AptitudeFilter, UniquesFilter, RacesFilter, SkillsFilter, SortOption, SortDirection, SparkDisplayMode, getFilterStats, getFilterStarOptions } from "./VeteransPage/types";
 import { SelectorType } from "./VeteransPage/InlineFilterSelector";
 import VeteransSorter from "./VeteransPage/VeteransSorter";
+import CustomScoringPanel from "./VeteransPage/CustomScoringPanel";
+import ParentCharacterFilter from "./VeteransPage/ParentCharacterFilter";
 
 import VeteranCard from "./VeteransPage/VeteranCard";
+import BestComboPanel from "./VeteransPage/BestComboPanel";
 import FilterToolbar from "./VeteransPage/FilterToolbar";
 import ActiveFiltersList from "./VeteransPage/ActiveFiltersList";
 import OptimizerPanel from "./VeteransPage/OptimizerPanel";
@@ -16,14 +19,20 @@ import RacePlannerModal from "./VeteransPage/RacePlannerModal";
 import SparkProcModal from "./VeteransPage/SparkProcModal";
 import { applyFiltersAndSort, getAvailableStats } from "./VeteransPage/VeteransLogic";
 import {
+    calculateCustomScore,
+    calculateCustomScoreRanges,
+    getSearchHighlightedFactorKeys,
+    loadCustomScoringConfig,
+    saveCustomScoringConfig,
+} from "./VeteransPage/customScoring";
+import {
     getKvKeyFromUrl,
-    buildShareBody,
-    uploadVeteransToWorker,
     fetchVeteransFromWorker,
     fetchLoanedChara,
     fetchAccountVeterans,
     shouldLoadAccountVeterans,
 } from "./VeteransPage/UrlSharing";
+import { searchUmaMoeVeterans, UmaMoeSearchFilters, UmaMoeSearchResult } from "./VeteransPage/umaMoeSearch";
 
 const FILTER_CONFIG = {
     blues: { categoryId: 1, stateKey: "bluesFilters" as const, label: "Blues", color: "rgb(55, 183, 244)", selectorType: "blues" as SelectorType },
@@ -38,11 +47,15 @@ export default function VeteransPage() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const vetListRef = useRef<HTMLDivElement>(null);
 
-    const [veterans, setVeterans] = useState<Veteran[]>([]);
+    const [ownedVeterans, setOwnedVeterans] = useState<Veteran[]>([]);
+    const [sourceTab, setSourceTab] = useState<"owned" | "moe" | "best">("owned");
+    const [moeVeterans, setMoeVeterans] = useState<Veteran[]>([]);
+    const [moeSearching, setMoeSearching] = useState(false);
+    const [moeError, setMoeError] = useState("");
+    const [moeMeta, setMoeMeta] = useState<UmaMoeSearchResult | null>(null);
+    const [moeSearchParamsKey, setMoeSearchParamsKey] = useState<string | null>(null);
+    const veterans = sourceTab === "moe" ? moeVeterans : ownedVeterans;
     const [error, setError] = useState("");
-    const [successMessage, setSuccessMessage] = useState("");
-    const [sharing, setSharing] = useState(false);
-    const [shareCache, setShareCache] = useState<Record<string, string>>({});
     const [accountVeteranMeta, setAccountVeteranMeta] = useState<{
         viewerId: number;
         veteranCount: number;
@@ -112,17 +125,84 @@ export default function VeteransPage() {
     const [showRacesSelector, setShowRacesSelector] = useState(false);
     const [showSkillsSelector, setShowSkillsSelector] = useState(false);
 
-    const [activeSort, setActiveSort] = useState<SortOption>("date");
+    const [activeSort, setActiveSort] = useState<SortOption>("custom");
     const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+    const [sparkDisplayMode, setSparkDisplayMode] = useState<SparkDisplayMode>("separate");
     const [nameSearch, setNameSearch] = useState("");
+    const [parentCharaIds, setParentCharaIds] = useState<number[]>([]);
     const [affinityCharaId, setAffinityCharaId] = useState<number | null>(null);
+    const [customScoringConfig, setCustomScoringConfig] = useState(loadCustomScoringConfig);
+
+    useEffect(() => {
+        saveCustomScoringConfig(customScoringConfig);
+    }, [customScoringConfig]);
+
+    const customScoreRanges = useMemo(
+        () => calculateCustomScoreRanges(veterans),
+        [veterans],
+    );
+
+    const customScoreContext = useMemo(
+        () => ({
+            maxGpAffinity: customScoreRanges.maxGpAffinity,
+            maxRaceWins: customScoreRanges.maxRaceWins,
+        }),
+        [customScoreRanges],
+    );
+
+    const searchHighlightedFactorKeys = useMemo(
+        () => getSearchHighlightedFactorKeys(customScoringConfig),
+        [customScoringConfig],
+    );
+
+    const umaMoeSearchFilters = useMemo<UmaMoeSearchFilters>(() => ({
+        blues: bluesFilters,
+        aptitude: aptitudeFilters,
+        uniques: uniquesFilters,
+        races: racesFilters,
+        skills: skillsFilters,
+    }), [bluesFilters, aptitudeFilters, uniquesFilters, racesFilters, skillsFilters]);
+
+    const moeSearchSignature = useMemo(() => JSON.stringify({
+        style: customScoringConfig.skillSparkStyle,
+        weights: customScoringConfig.skillSparkWeights[customScoringConfig.skillSparkStyle],
+        pinkPreset: customScoringConfig.pinkPreset,
+        characters: [...parentCharaIds].sort((a, b) => a - b),
+        filters: umaMoeSearchFilters,
+    }), [
+        customScoringConfig.skillSparkStyle,
+        customScoringConfig.skillSparkWeights,
+        customScoringConfig.pinkPreset,
+        parentCharaIds,
+        umaMoeSearchFilters,
+    ]);
+
+    const moeSearchIsCurrent = !!moeMeta && moeSearchParamsKey === moeSearchSignature;
+    const moeCanLoadMore = moeSearchIsCurrent
+        && !!moeMeta
+        && moeMeta.page + 1 < moeMeta.totalPages;
+
+    const customScores = useMemo(() => {
+        if (activeSort !== "custom") return null;
+
+        const scores = new Map<Veteran, number>();
+        for (const veteran of veterans) {
+            scores.set(veteran, calculateCustomScore(veteran, customScoringConfig, customScoreContext).total);
+        }
+        return scores;
+    }, [veterans, activeSort, customScoringConfig, customScoreContext]);
+
+    const handleCustomScoringChange = (config: typeof customScoringConfig) => {
+        setCustomScoringConfig(config);
+        setActiveSort("custom");
+    };
 
     useEffect(() => {
         const kvKey = getKvKeyFromUrl();
         if (kvKey) {
             fetchVeteransFromWorker(kvKey)
                 .then(v => {
-                    setVeterans(v);
+                    setOwnedVeterans(v);
                     setAccountVeteranMeta(null);
                 })
                 .catch(err => setError(`Failed to load shared roster: ${err.message}`));
@@ -132,7 +212,7 @@ export default function VeteransPage() {
         if (shouldLoadAccountVeterans()) {
             fetchAccountVeterans()
                 .then(({ viewerId, veteranCount, updatedAt, veterans: loadedVeterans }) => {
-                    setVeterans(loadedVeterans);
+                    setOwnedVeterans(loadedVeterans);
                     setAccountVeteranMeta({ viewerId, veteranCount, updatedAt });
                     setError("");
                 })
@@ -178,7 +258,8 @@ export default function VeteransPage() {
             try {
                 const parsed = JSON.parse(String(reader.result ?? ""));
                 if (!Array.isArray(parsed)) throw new Error("Not an array");
-                setVeterans(parsed);
+                setOwnedVeterans(parsed);
+                setSourceTab("owned");
                 setError("");
             } catch (err) {
                 setError(`Failed to parse JSON: ${err}`);
@@ -188,29 +269,41 @@ export default function VeteransPage() {
         e.target.value = "";
     };
 
-    const handleExportUrl = async () => {
-        if (!veterans.length) return;
-        const body = buildShareBody(veterans);
-        const hash = body.length + ":" + [...body].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0).toString(36);
-        const cachedUrl = shareCache[hash];
-        if (cachedUrl) {
-            await navigator.clipboard.writeText(cachedUrl);
-            setSuccessMessage("Share link copied to clipboard!");
-            setTimeout(() => setSuccessMessage(""), 3000);
+    const runUmaMoeSearch = async (page: number, append: boolean) => {
+        setMoeSearching(true);
+        setMoeError("");
+        const signature = moeSearchSignature;
+
+        try {
+            const result = await searchUmaMoeVeterans(customScoringConfig, parentCharaIds, umaMoeSearchFilters, page);
+            setMoeVeterans(current => {
+                if (!append) return result.veterans;
+
+                const seen = new Set(current.map(veteran => veteran.trained_chara_id));
+                return [
+                    ...current,
+                    ...result.veterans.filter(veteran => !seen.has(veteran.trained_chara_id)),
+                ];
+            });
+            setMoeMeta(result);
+            setMoeSearchParamsKey(signature);
+            setSourceTab("moe");
+            setActiveSort("custom");
+        } catch (err: any) {
+            setMoeError(err?.message ?? String(err));
+        } finally {
+            setMoeSearching(false);
+        }
+    };
+
+    const handleUmaMoeSearchButton = () => {
+        if (!moeSearchIsCurrent) {
+            void runUmaMoeSearch(0, false);
             return;
         }
-        setSharing(true);
-        try {
-            const url = await uploadVeteransToWorker(body);
-            await navigator.clipboard.writeText(url);
-            setSharing(false);
-            setSuccessMessage("Share link copied to clipboard!");
-            setShareCache(prev => ({ ...prev, [hash]: url }));
-            setTimeout(() => setSuccessMessage(""), 3000);
-        } catch (err: any) {
-            setSharing(false);
-            setError(`Export failed: ${err.message}`);
-        }
+
+        if (!moeCanLoadMore || !moeMeta) return;
+        void runUmaMoeSearch(moeMeta.page + 1, true);
     };
 
     const handleAddFilter = (stateKey: string, filter: BaseFilter) => {
@@ -285,6 +378,9 @@ export default function VeteransPage() {
                 sortDirection,
                 nameSearch,
                 affinityCharaId,
+                parentCharaIds,
+                customScoringConfig,
+                customScoreContext,
             );
 
             const excludedCharaIds = new Set<number>();
@@ -307,15 +403,141 @@ export default function VeteransPage() {
         skills: showSkillsSelector,
     };
     const showOpenMyVeterans = !!accountVeteranSnapshot?.available && !accountVeteranMeta;
+    const activeUmaMoeFilterCount = bluesFilters.length
+        + aptitudeFilters.length
+        + uniquesFilters.length
+        + racesFilters.length
+        + skillsFilters.length;
 
     return (
         <Container className="vet-page-container">
             <input ref={fileInputRef} type="file" accept=".json" onChange={handleFileChange} className="vet-file-input" />
 
-            {successMessage && (
-                <Alert variant="success" dismissible onClose={() => setSuccessMessage("")}>
-                    {successMessage}
-                </Alert>
+            <div className="vet-source-tabs">
+                <Button
+                    variant={sourceTab === "owned" ? "primary" : "outline-secondary"}
+                    size="sm"
+                    onClick={() => setSourceTab("owned")}
+                >
+                    My veterans ({ownedVeterans.length})
+                </Button>
+                <Button
+                    variant={sourceTab === "moe" ? "primary" : "outline-secondary"}
+                    size="sm"
+                    onClick={() => setSourceTab("moe")}
+                >
+                    uma.moe search{moeVeterans.length > 0 ? ` (${moeVeterans.length})` : ""}
+                </Button>
+                <Button
+                    variant={sourceTab === "best" ? "primary" : "outline-secondary"}
+                    size="sm"
+                    onClick={() => setSourceTab("best")}
+                >
+                    Best combo
+                </Button>
+            </div>
+
+            {sourceTab === "best" && (
+                <BestComboPanel
+                    veterans={ownedVeterans}
+                    config={FILTER_CONFIG}
+                    scoringConfig={customScoringConfig}
+                    onScoringChange={handleCustomScoringChange}
+                    maxGpAffinity={customScoreRanges.maxGpAffinity}
+                    maxRaceWins={customScoreRanges.maxRaceWins}
+                />
+            )}
+
+            {sourceTab !== "best" && <>
+            {sourceTab === "moe" && (
+                <section className="vet-moe-search-panel">
+                    <div>
+                        <h2 className="vet-panel-title">uma.moe search</h2>
+                        <p className="vet-moe-search-description">
+                            These results come from uma.moe and stay separate from your uploaded veterans.
+                        </p>
+                        <div className="vet-moe-search-summary">
+                            <span>White sparks: {customScoringConfig.skillSparkStyle}</span>
+                            <span>
+                                Pink preset: {customScoringConfig.pinkPreset === "custom"
+                                    ? "Custom"
+                                    : customScoringConfig.pinkPreset.replace("-", " ")}
+                            </span>
+                            <span>
+                                Characters: {parentCharaIds.length > 0
+                                    ? `${parentCharaIds.length} selected`
+                                    : "All"}
+                            </span>
+                            <span>
+                                Filters: {activeUmaMoeFilterCount > 0 ? activeUmaMoeFilterCount : "None"}
+                            </span>
+                        </div>
+                        <div className="vet-moe-search-characters">
+                            <ParentCharacterFilter
+                                veterans={veterans}
+                                selected={parentCharaIds}
+                                onChange={setParentCharaIds}
+                                includeAllCharacters
+                            />
+                        </div>
+                    </div>
+                    <div className="vet-moe-search-actions">
+                        <CustomScoringPanel
+                            config={customScoringConfig}
+                            onChange={handleCustomScoringChange}
+                            maxGpAffinity={customScoreRanges.maxGpAffinity}
+                            maxRaceWins={customScoreRanges.maxRaceWins}
+                        />
+                        <Button
+                            variant="primary"
+                            onClick={handleUmaMoeSearchButton}
+                            disabled={moeSearching || (moeSearchIsCurrent && !moeCanLoadMore)}
+                        >
+                            {moeSearching
+                                ? (moeSearchIsCurrent ? "Loading..." : "Searching uma.moe...")
+                                : moeSearchIsCurrent
+                                    ? (moeCanLoadMore ? "Load 100 more" : "All results loaded")
+                                    : "Search uma.moe (100)"}
+                        </Button>
+                    </div>
+                    {moeError && (
+                        <Alert variant="danger" className="vet-moe-search-error" dismissible onClose={() => setMoeError("")}>
+                            {moeError}
+                        </Alert>
+                    )}
+                    {moeMeta && (
+                        <div className="vet-moe-search-meta">
+                            uma.moe reports {moeMeta.total} matching records. Showing {moeVeterans.length}
+                            {moeSearchIsCurrent ? ` (page ${moeMeta.page + 1} of ${moeMeta.totalPages}).` : "."}
+                            {!moeSearchIsCurrent && " Search parameters changed — run a new search to update results."}
+                        </div>
+                    )}
+                </section>
+            )}
+
+            {sourceTab === "moe" && (
+                <section className="vet-panel-card vet-panel-card--filters vet-moe-filter-card">
+                    <div className="vet-panel-header">
+                        <div>
+                            <h2 className="vet-panel-title">uma.moe search filters</h2>
+                        </div>
+                    </div>
+                    <div className="vet-filter-buttons">
+                        <FilterToolbar
+                            config={FILTER_CONFIG}
+                            visibilityState={visibilityState}
+                            onToggle={toggleSelector}
+                            onAddFilter={handleAddFilter}
+                            getAvailableStats={(catId) => getAvailableStats(veterans, catId, true)}
+                        />
+                    </div>
+                    <ActiveFiltersList
+                        filters={{ bluesFilters, aptitudeFilters, uniquesFilters, racesFilters, skillsFilters }}
+                        config={FILTER_CONFIG}
+                        onRemove={handleRemoveFilter}
+                        onClearAll={handleClearAllFilters}
+                    />
+                </section>
             )}
 
             {(error || renderError) && (
@@ -324,7 +546,7 @@ export default function VeteransPage() {
                 </Alert>
             )}
 
-            {!veterans.length && !error && !renderError && (
+            {sourceTab === "owned" && !ownedVeterans.length && !error && !renderError && (
                 <>
                     <div className="upload-zone" onClick={() => fileInputRef.current?.click()}>
                         <div className="upload-icon">Upload</div>
@@ -346,12 +568,12 @@ export default function VeteransPage() {
 
             {veterans.length > 0 && !renderError && (
                 <>
-                    {accountVeteranMeta ? (
+                    {sourceTab === "owned" && accountVeteranMeta ? (
                         <Alert variant="info">
                             Loaded your stored veteran roster for viewer ID {accountVeteranMeta.viewerId}. Snapshot contains {accountVeteranMeta.veteranCount} veterans and was last updated on {new Date(accountVeteranMeta.updatedAt).toLocaleString()}.
                         </Alert>
                     ) : null}
-                    {showOpenMyVeterans ? (
+                    {sourceTab === "owned" && showOpenMyVeterans ? (
                         <div className="d-flex justify-content-end mb-3">
                             <Button variant="outline-info" href="/veterans?mine=1">
                                 Open my veterans
@@ -360,52 +582,90 @@ export default function VeteransPage() {
                     ) : null}
                     <div className="vet-top-layout">
                         <div className="vet-top-left">
-                            <section className="vet-panel-card vet-panel-card--filters">
-                                <div className="vet-panel-header">
-                                    <div>
-                                        <h2 className="vet-panel-title">Filters</h2>
+                            {sourceTab === "owned" && (
+                                <section className="vet-panel-card vet-panel-card--filters">
+                                    <div className="vet-panel-header">
+                                        <div>
+                                            <h2 className="vet-panel-title">Filters</h2>
+                                        </div>
                                     </div>
-                                </div>
-                                <div className="vet-filter-buttons">
-                                    <FilterToolbar
+                                    <div className="vet-filter-buttons">
+                                        <FilterToolbar
+                                            config={FILTER_CONFIG}
+                                            visibilityState={visibilityState}
+                                            onToggle={toggleSelector}
+                                            onAddFilter={handleAddFilter}
+                                            getAvailableStats={(catId) => getAvailableStats(veterans, catId)}
+                                        />
+                                    </div>
+                                    <ActiveFiltersList
+                                        filters={{ bluesFilters, aptitudeFilters, uniquesFilters, racesFilters, skillsFilters }}
                                         config={FILTER_CONFIG}
-                                        visibilityState={visibilityState}
-                                        onToggle={toggleSelector}
-                                        onAddFilter={handleAddFilter}
-                                        getAvailableStats={(catId) => getAvailableStats(veterans, catId)}
+                                        onRemove={handleRemoveFilter}
+                                        onClearAll={handleClearAllFilters}
                                     />
-                                </div>
-                                <ActiveFiltersList
-                                    filters={{ bluesFilters, aptitudeFilters, uniquesFilters, racesFilters, skillsFilters }}
-                                    config={FILTER_CONFIG}
-                                    onRemove={handleRemoveFilter}
-                                    onClearAll={handleClearAllFilters}
-                                />
-                            </section>
+                                </section>
+                            )}
 
                             <section className="vet-panel-card vet-panel-card--results" ref={vetListRef}>
                                 <div className="vet-panel-header vet-panel-header--results">
-                                    <div>
-                                        <h2 className="vet-panel-title">Results</h2>
+                                    <div className="vet-results-title-row">
+                                        <h2 className="vet-panel-title">
+                                            {sourceTab === "moe" ? "uma.moe Results" : "Results"}
+                                        </h2>
+                                        {sourceTab === "moe" && (
+                                            <span className="vet-uma-moe-badge">uma.moe</span>
+                                        )}
                                     </div>
-                                    <span className="vet-results-count">
-                                        Showing {displayVeterans.length} of {veterans.length} veterans
-                                    </span>
+                                    <div className="vet-results-header-right">
+                                        <span className="vet-results-count">
+                                            Showing {displayVeterans.length} of {veterans.length} veterans
+                                        </span>
+                                        <div className="vet-spark-display-toggle">
+                                            <span className="vet-spark-display-label">Sparks</span>
+                                            <ButtonGroup size="sm">
+                                                <Button
+                                                    variant={sparkDisplayMode === "separate" ? "secondary" : "outline-secondary"}
+                                                    onClick={() => setSparkDisplayMode("separate")}
+                                                >
+                                                    Separate
+                                                </Button>
+                                                <Button
+                                                    variant={sparkDisplayMode === "combined" ? "secondary" : "outline-secondary"}
+                                                    onClick={() => setSparkDisplayMode("combined")}
+                                                >
+                                                    Combined
+                                                </Button>
+                                                <Button
+                                                    variant={sparkDisplayMode === "gp" ? "secondary" : "outline-secondary"}
+                                                    onClick={() => setSparkDisplayMode("gp")}
+                                                >
+                                                    GP view
+                                                </Button>
+                                            </ButtonGroup>
+                                        </div>
+                                    </div>
                                 </div>
-                                <InputGroup className="vet-search-input">
-                                    <Form.Control
-                                        placeholder="Search by name..."
-                                        value={nameSearch}
-                                        onChange={e => setNameSearch(e.target.value)}
-                                    />
-                                    {nameSearch && (
-                                        <Button variant="outline-secondary" onClick={() => setNameSearch("")}>{"\u00D7"}</Button>
+                                <div className="vet-search-row">
+                                    <InputGroup className="vet-search-input">
+                                        <Form.Control
+                                            placeholder="Search by name..."
+                                            value={nameSearch}
+                                            onChange={e => setNameSearch(e.target.value)}
+                                        />
+                                        {nameSearch && (
+                                            <Button variant="outline-secondary" onClick={() => setNameSearch("")}>{"\u00D7"}</Button>
+                                        )}
+                                    </InputGroup>
+                                    {sourceTab === "owned" && (
+                                        <ParentCharacterFilter
+                                            veterans={veterans}
+                                            selected={parentCharaIds}
+                                            onChange={setParentCharaIds}
+                                        />
                                     )}
-                                </InputGroup>
+                                </div>
                                 <div className="vet-sort-share-group">
-                                    <Button variant="secondary" size="sm" onClick={handleExportUrl} disabled={sharing}>
-                                        {sharing ? "Sharing..." : "Share"}
-                                    </Button>
                                     <VeteransSorter
                                         activeSort={activeSort}
                                         sortDirection={sortDirection}
@@ -413,6 +673,14 @@ export default function VeteransPage() {
                                         onDirectionToggle={() => setSortDirection(prev => (prev === "desc" ? "asc" : "desc"))}
                                         affinityCharaId={affinityCharaId}
                                     />
+                                    {sourceTab === "owned" && (
+                                        <CustomScoringPanel
+                                            config={customScoringConfig}
+                                            onChange={handleCustomScoringChange}
+                                            maxGpAffinity={customScoreRanges.maxGpAffinity}
+                                            maxRaceWins={customScoreRanges.maxRaceWins}
+                                        />
+                                    )}
                                     <OptimizerPanel veterans={veterans} />
                                 </div>
                             </section>
@@ -464,11 +732,15 @@ export default function VeteransPage() {
                                 legacyParent1={affinityParent1}
                                 legacyParent2={affinityParent2}
                                 onSelectForSlot={handleSelectForSlot}
+                                customScore={customScores?.get(veteran)}
+                                sparkDisplayMode={sparkDisplayMode}
+                                highlightedFactorKeys={searchHighlightedFactorKeys}
                             />
                         ))}
                     </div>
                 </>
             )}
+            </>}
         </Container>
     );
 }

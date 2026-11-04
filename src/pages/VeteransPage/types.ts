@@ -74,6 +74,8 @@ export type Veteran = {
     succession_history_array: string[];
     scenario_id: number;
     create_time: string;
+    uma_moe_account_id?: string;
+    uma_moe_trainer_name?: string;
 };
 
 export type FilterType = 'Legacy' | 'Total';
@@ -93,8 +95,41 @@ export type UniquesFilter = BaseFilter;
 export type RacesFilter = BaseFilter;
 export type SkillsFilter = BaseFilter;
 
-export type SortOption = 'date' | 'none' | 'blues' | 'total_common' | 'total_skills' | 'legacy_common' | 'legacy_skills' | 'score' | 'affinity';
+export type SortOption = 'date' | 'none' | 'blues' | 'total_common' | 'total_skills' | 'legacy_common' | 'legacy_skills' | 'score' | 'affinity' | 'custom';
 export type SortDirection = 'asc' | 'desc';
+export type SparkDisplayMode = 'separate' | 'combined' | 'gp';
+
+export type StarWeights = [number, number, number];
+
+export type CustomScoreMode = 'parent' | 'grandparent';
+export type SkillSparkStyle = 'front' | 'pace' | 'late' | 'end';
+export type PinkPresetKey =
+    | 'custom'
+    | 'turf-sprint'
+    | 'dirt-sprint'
+    | 'turf-mile'
+    | 'dirt-mile'
+    | 'turf-medium'
+    | 'dirt-medium'
+    | 'turf-long'
+    | 'dirt-long';
+
+export type CustomScoringConfig = {
+    configVersion: number;
+    mode: CustomScoreMode;
+    parentSelfMultiplier: number;
+    blueWeights: StarWeights;
+    blueMultipliers: Record<string, number>;
+    pinkWeights: StarWeights;
+    pinkMultipliers: Record<string, number>;
+    pinkPreset: PinkPresetKey;
+    uniqueWeights: StarWeights;
+    scenarioPointsPerStar: number;
+    affinityMinMultiplier: number;
+    affinityMaxMultiplier: number;
+    skillSparkStyle: SkillSparkStyle;
+    skillSparkWeights: Record<SkillSparkStyle, Record<string, StarWeights>>;
+};
 
 export type OptimizerConfig = {
     bluesWeight: number;

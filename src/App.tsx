@@ -7,9 +7,6 @@ import UMDatabaseWrapper from './data/UMDatabaseWrapper';
 import GameDataLoader from './data/GameDataLoader';
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import PageMeta from "./components/PageMeta";
-import { formatNoteDate, sortNotesNewestFirst } from "./notesManifest";
-import type { NoteEntry } from "./notesManifest";
-import { newestCmBadgeLabel } from './pages/SimDataPage/snapshotOrder';
 
 // Wraps lazy() to auto-reload once on chunk load failure (stale deploy hash mismatch).
 function lazyWithReload<T extends React.ComponentType<any>>(
@@ -40,9 +37,6 @@ const InheritanceFactorsPage = lazyWithReload(() => import("./pages/InheritanceF
 const AuthPage        = lazyWithReload(() => import("./pages/AuthPage"),        "AuthPage");
 const AccountPage     = lazyWithReload(() => import("./pages/AccountPage"),     "AccountPage");
 const PrivacyPolicyPage = lazyWithReload(() => import("./pages/PrivacyPolicyPage"), "PrivacyPolicyPage");
-const rawSimDataApiBase = (import.meta.env.VITE_SIMDATA_API_BASE ?? "").trim();
-const SIMDATA_API_BASE = rawSimDataApiBase === "same-origin" ? "" : rawSimDataApiBase.replace(/\/$/, "");
-
 // Search-result copy for each route. Kept together so the titles and descriptions can be read
 // side by side; they compete with each other in results, so they need to stay distinct.
 const PAGE_META: Record<string, { title: string; description?: string; noIndex?: boolean }> = {
@@ -94,25 +88,6 @@ function withMeta(meta: { title: string; description?: string; noIndex?: boolean
 function RedirectToUmaLogs() {
     const { search, hash } = useLocation();
     return <Navigate to={{ pathname: "/umalogs", search, hash }} replace />;
-}
-
-function FooterMailIcon() {
-    return (
-        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M3.5 5.5h13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1Z" stroke="currentColor" strokeWidth="1.6" />
-            <path d="m4 6 6 4.5L16 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-    );
-}
-
-function FooterPrivacyIcon() {
-    return (
-        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M10 2.5c2.1 1.7 4.25 2.54 6.5 2.5v4.56c0 3.74-2.3 6.03-6.5 7.94-4.2-1.91-6.5-4.2-6.5-7.94V5c2.25.04 4.4-.8 6.5-2.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-            <path d="M7.6 9.3V8.2a2.4 2.4 0 0 1 4.8 0v1.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-            <rect x="6.3" y="9.3" width="7.4" height="5.2" rx="1.2" stroke="currentColor" strokeWidth="1.6" />
-        </svg>
-    );
 }
 
 export default function App() {
@@ -170,52 +145,12 @@ export default function App() {
 }
 
 function AppShell() {
-    const { loading, authenticated, user } = useAuth();
-    const [umaLogsBadgeLabel, setUmaLogsBadgeLabel] = useState("Check this out!");
-    const [latestNote, setLatestNote] = useState<NoteEntry | null>(null);
-
-    useEffect(() => {
-        const controller = new AbortController();
-        const timeoutId = window.setTimeout(() => controller.abort(), 5000);
-        fetch(`${SIMDATA_API_BASE}/api/simdata/manifest`, { signal: controller.signal })
-            .then(response => {
-                if (!response.ok) throw new Error(`HTTP ${response.status} - manifest not found`);
-                return response.json() as Promise<{ schemaVersion: number; snapshots?: { cmId: string }[] }>;
-            })
-            .then(manifest => {
-                if (manifest.schemaVersion === 1 && Array.isArray(manifest.snapshots)) {
-                    setUmaLogsBadgeLabel(newestCmBadgeLabel(manifest.snapshots));
-                }
-            })
-            .catch((error: Error) => {
-                if (error.name !== 'AbortError') console.warn('Failed to load SimData manifest for navbar badge:', error);
-            });
-        return () => { window.clearTimeout(timeoutId); controller.abort(); };
-    }, []);
-
-    useEffect(() => {
-        const controller = new AbortController();
-        fetch(`${import.meta.env.BASE_URL}notes/manifest.json`, { signal: controller.signal })
-            .then((response) => {
-                if (!response.ok) throw new Error(`HTTP ${response.status} - manifest not found`);
-                return response.json() as Promise<NoteEntry[]>;
-            })
-            .then((notes) => {
-                setLatestNote(sortNotesNewestFirst(notes)[0] ?? null);
-            })
-            .catch((error: Error) => {
-                if (error.name !== "AbortError") {
-                    console.warn("Failed to load notes manifest for navbar badge:", error);
-                }
-            });
-
-        return () => controller.abort();
-    }, []);
+    const { authenticated, user } = useAuth();
 
     return <>
         <Navbar className="haku-nav" variant="dark" expand="lg">
             <Container>
-                <Navbar.Brand as={Link} to="/">Hakuraku</Navbar.Brand>
+                <Navbar.Brand as={Link} to="/">forkuraku</Navbar.Brand>
                 <Navbar.Toggle aria-controls="basic-navbar-nav" />
 
                 <Navbar.Collapse id="basic-navbar-nav">
@@ -224,39 +159,11 @@ function AppShell() {
                         <Nav.Link as={NavLink} to="/veterans">Veterans</Nav.Link>
                         <Nav.Link as={NavLink} to="/racedata">Race Analysis</Nav.Link>
                         <Nav.Link as={NavLink} to="/multirace">Multi-Race Analysis</Nav.Link>
-                        <Nav.Link as={NavLink} to="/masterdata">Master Data</Nav.Link>
-                        <Nav.Link as={NavLink} to="/notes">
-                            <span className="haku-nav-link-with-badge">
-                                <span>Research Notes</span>
-                                {latestNote && (
-                                    <time
-                                        className="haku-nav-badge"
-                                        dateTime={latestNote.date}
-                                        title={`Latest note: ${latestNote.title}`}
-                                    >
-                                        {formatNoteDate(latestNote.date)}
-                                    </time>
-                                )}
-                            </span>
-                        </Nav.Link>
-                        <Nav.Link as={NavLink} to="/umalogs">
-                            <span className="haku-nav-link-with-badge">
-                                <span>UmaLogs</span>
-                                <span className="haku-nav-badge">{umaLogsBadgeLabel}</span>
-                            </span>
-                        </Nav.Link>
                     </Nav>
                     <Nav className="ms-auto align-items-lg-center">
-                        {loading ? (
-                            <Nav.Link disabled>Account</Nav.Link>
-                        ) : authenticated && user ? (
+                        {authenticated && user ? (
                             <Nav.Link as={NavLink} to="/account">{user.accountName}</Nav.Link>
-                        ) : (
-                            <>
-                                <Nav.Link as={NavLink} to="/auth?mode=register">Register</Nav.Link>
-                                <Nav.Link as={NavLink} to="/auth">Log in</Nav.Link>
-                            </>
-                        )}
+                        ) : null}
                     </Nav>
                 </Navbar.Collapse>
             </Container>
@@ -281,81 +188,23 @@ function AppShell() {
                     <Route path="/account" element={withMeta(PAGE_META.account, <AccountPage />)} />
                     <Route path="/accounts" element={withMeta(PAGE_META.account, <AccountPage />)} />
                     <Route path="/privacy" element={withMeta(PAGE_META.privacy, <PrivacyPolicyPage />)} />
-                    <Route path="/" element={<Home />} />
+                    <Route path="/" element={withMeta(PAGE_META.veterans, <VeteransPage />)} />
                 </Routes>
             </Suspense>
         </Container>
 
         <footer className="haku-footer">
             <Container className="haku-footer-inner">
-                <div className="haku-footer-links">
-                    <Link to="/privacy" className="haku-footer-link haku-footer-link--text">
-                        <span className="haku-footer-inline-icon"><FooterPrivacyIcon /></span>
-                        <span>Privacy Policy</span>
-                    </Link>
-                    <a href="mailto:contact@hakuraku.moe" className="haku-footer-link haku-footer-link--text">
-                        <span className="haku-footer-inline-icon"><FooterMailIcon /></span>
-                        <span>contact@hakuraku.moe</span>
-                    </a>
-                    <a
-                        href="https://www.patreon.com/hakuraku"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="haku-footer-link"
-                    >
-                        <img
-                            src={import.meta.env.BASE_URL + 'assets/other/patreon.webp'}
-                            alt=""
-                            className="haku-footer-brand-icon"
-                        />
-                        <span>Patreon</span>
-                    </a>
-                    <a
-                        href="https://github.com/ayaliz/hakuraku/"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="haku-footer-link"
-                    >
-                        <img
-                            src={import.meta.env.BASE_URL + 'assets/other/github.webp'}
-                            alt=""
-                            className="haku-footer-brand-icon"
-                        />
-                        <span>GitHub</span>
-                    </a>
-                    <a
-                        href="https://discord.com/invite/q38jC7q2Hs"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="haku-footer-link"
-                    >
-                        <img
-                            src={import.meta.env.BASE_URL + 'assets/other/discord.webp'}
-                            alt=""
-                            className="haku-footer-brand-icon"
-                        />
-                        <span>Discord</span>
-                    </a>
-                </div>
-                <div className="haku-footer-disclaimer">
-                    This website is not affiliated with Cygames, Inc.
-                </div>
+                <a
+                    href="https://github.com/ayaliz/hakuraku/"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="haku-footer-link"
+                >
+                    forkuraku, forked from Hakuraku
+                </a>
             </Container>
         </footer>
     </>;
 }
 
-function Home() {
-    return (
-        <div className="home-promo">
-            <PageMeta
-                title="Hakuraku"
-                appendSiteName={false}
-                description="Umamusume race analysis and room match data"
-            />
-            <div className="home-promo-card">
-                <img src={import.meta.env.BASE_URL + 'assets/sky.webp'} alt="Sky" className="home-promo-img" />
-            </div>
-        </div>
-    );
-}
