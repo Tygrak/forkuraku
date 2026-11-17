@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Button, Form, Modal } from "react-bootstrap";
 import AssetLoader from "../../data/AssetLoader";
 import UMDatabaseWrapper from "../../data/UMDatabaseWrapper";
+import { isPlayableCharacter } from "../../data/GameToraCharacterSkills";
 import { Veteran } from "./types";
 import "./VeteransPage.css";
 
@@ -55,7 +56,7 @@ const ParentCharacterFilter: React.FC<ParentCharacterFilterProps> = ({
         if (includeAllCharacters) {
             for (const chara of Object.values(UMDatabaseWrapper.charas)) {
                 const id = chara.id;
-                if (id == null || byId.has(id) || !UMDatabaseWrapper.charaRelationTypes[id]) continue;
+                if (id == null || byId.has(id) || !UMDatabaseWrapper.charaRelationTypes[id] || !isPlayableCharacter(id)) continue;
 
                 byId.set(id, {
                     id,

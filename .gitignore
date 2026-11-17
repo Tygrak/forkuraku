@@ -65,8 +65,8 @@ umdb/*.pyi
 /bin/
 /public/analysis/
 
-# scraped source cache
-/scrape-cache/
+# local scraping tools and raw cache
+/data/scraping/
 
 # local veteran roster exports
 /veterans.json

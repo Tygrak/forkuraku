@@ -6,17 +6,15 @@ import { calculateAffinity, calculatePairAffinity } from '../../data/VeteransHel
 import { getCharaImageUrl, getCardName, formatCardName } from './VeteransUIHelper';
 import AssetLoader from '../../data/AssetLoader';
 import UMDatabaseWrapper from '../../data/UMDatabaseWrapper';
+import { isPlayableCharacter } from '../../data/GameToraCharacterSkills';
 
 interface Props {
     mainCharId: number | null;
     onMainCharChange: (id: number | null) => void;
     parent1: Veteran | null;
     parent2: Veteran | null;
-    parent2IsBorrowed: boolean;
     activeSlot: 'p1' | 'p2' | null;
     onLegacySlotClick: (slot: 'p1' | 'p2') => void;
-    onBorrowLookup: (viewerId: string) => Promise<void>;
-    borrowLoading: boolean;
     onReset: () => void;
     onPlannerOpen: () => void;
     onSparkProcOpen: () => void;
@@ -24,13 +22,11 @@ interface Props {
 
 const AffinityCalculatorPanel: React.FC<Props> = ({
     mainCharId, onMainCharChange,
-    parent1, parent2, parent2IsBorrowed, activeSlot, onLegacySlotClick,
-    onBorrowLookup, borrowLoading, onReset, onPlannerOpen, onSparkProcOpen,
+    parent1, parent2, activeSlot, onLegacySlotClick,
+    onReset, onPlannerOpen, onSparkProcOpen,
 }) => {
     const [showMainPicker, setShowMainPicker] = useState(false);
     const [mainSearch, setMainSearch] = useState('');
-    const [borrowId, setBorrowId] = useState('');
-    const [borrowError, setBorrowError] = useState<string | null>(null);
 
     const p1Aff = mainCharId && parent1 ? calculateAffinity(parent1, mainCharId) : null;
     const p2Aff = mainCharId && parent2 ? calculateAffinity(parent2, mainCharId) : null;
@@ -40,7 +36,7 @@ const AffinityCalculatorPanel: React.FC<Props> = ({
 
     const allCharas = useMemo(() =>
         Object.values(UMDatabaseWrapper.charas)
-            .filter(c => c.id != null && UMDatabaseWrapper.charaRelationTypes[c.id] != null)
+            .filter(c => c.id != null && UMDatabaseWrapper.charaRelationTypes[c.id] != null && isPlayableCharacter(c.id))
             .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')),
         []
     );
@@ -58,23 +54,11 @@ const AffinityCalculatorPanel: React.FC<Props> = ({
         });
     };
 
-    const handleBorrow = async () => {
-        if (!borrowId.trim()) return;
-        setBorrowError(null);
-        try {
-            await onBorrowLookup(borrowId.trim());
-            setBorrowId('');
-        } catch (e: any) {
-            setBorrowError(e.message ?? String(e));
-        }
-    };
-
     const renderLegacySlot = (slot: 'p1' | 'p2') => {
         const vet = slot === 'p1' ? parent1 : parent2;
         const isActive = activeSlot === slot;
-        const isBorrowed = slot === 'p2' && parent2IsBorrowed;
         const label = slot === 'p1' ? 'Legacy 1' : 'Legacy 2';
-        const subLabel = vet ? (isBorrowed ? 'Borrow' : formatCardName(getCardName(vet.card_id))) : 'Select';
+        const subLabel = vet ? formatCardName(getCardName(vet.card_id)) : 'Select';
 
         return (
             <div className={`aff-slot${isActive ? ' active' : ''}`} onClick={() => onLegacySlotClick(slot)}>
@@ -139,20 +123,6 @@ const AffinityCalculatorPanel: React.FC<Props> = ({
                 {renderLegacySlot('p1')}
                 {renderLegacySlot('p2')}
                 <div className="aff-tree-actions">
-                    <div className="aff-borrow-row">
-                        <Form.Control
-                            size="sm"
-                            placeholder="Friend code for Legacy 2..."
-                            value={borrowId}
-                            onChange={e => setBorrowId(e.target.value)}
-                            onKeyDown={e => e.key === 'Enter' && handleBorrow()}
-                            className="aff-borrow-input"
-                        />
-                        <button className="aff-action-btn" onClick={handleBorrow} disabled={borrowLoading || !borrowId.trim()}>
-                            {borrowLoading ? '...' : 'Borrow'}
-                        </button>
-                    </div>
-                    {borrowError && <small className="aff-borrow-error">{borrowError}</small>}
                     <button className="aff-action-btn" onClick={onReset}>
                         ↺ Reset
                     </button>

@@ -14,10 +14,10 @@ export default function PageMeta({
     title: string;
     description?: string;
     noIndex?: boolean;
-    /** Set false when the title is already the site name, to avoid "Hakuraku - Hakuraku". */
+    /** Set false when the title is already the site name, to avoid "forkuraku - forkuraku". */
     appendSiteName?: boolean;
 }) {
-    const fullTitle = appendSiteName ? `${title} - Hakuraku` : title;
+    const fullTitle = appendSiteName ? `${title} - forkuraku` : title;
     return (
         <>
             <title>{fullTitle}</title>

@@ -35,6 +35,7 @@
   },
   "scripts": {
     "start": "vite --host 127.0.0.1 --mode live-api",
+    "dev": "vite --host 127.0.0.1 --mode live-api",
     "start:local": "vite --host 127.0.0.1",
     "start:live-api": "vite --host 127.0.0.1 --mode live-api",
     "build": "vite build",
@@ -42,6 +43,7 @@
     "build:cloudflare": "node --import tsx tools/build-cloudflare-site.mts",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "scrape:gametora": "node data/scraping/scrape-gametora-characters.mjs",
     "test": "yarn test:frontend && yarn test:domain && yarn test:simdata-data",
     "test:frontend": "node --import tsx --test src/components/RaceReplay/utils/skillLabelTiming.test.ts",
     "test:domain": "node --import tsx --test src/features/umalogs/model/*.test.ts src/features/umalogs/api/*.test.ts src/features/umalogs/components/selectors/*.test.ts src/pages/UmaLogsPage/query/*.test.ts",

@@ -5,8 +5,11 @@ import {
     calculatePairAffinity,
     calculateSparkChance,
     FactorItem,
+    getFactorCategory,
 } from "../../data/VeteransHelper";
 import UMDatabaseWrapper from "../../data/UMDatabaseWrapper";
+import { getGuaranteedCharacterSkills } from "../../data/GameToraCharacterSkills";
+import { AptitudeGrade, getCharacterBaseAptitudes } from "../../data/GameToraCharacterAptitudes";
 import { getSparkScoreValue } from "./customScoring";
 import { CustomScoringConfig, Veteran } from "./types";
 
@@ -40,8 +43,58 @@ export const APTITUDE_GROUP_LABELS: Record<AptitudeGroup, string> = {
 };
 
 const APTITUDE_BY_KEY = new Map(APTITUDE_OPTIONS.map(option => [option.key, option]));
+const APTITUDE_INDEX_BY_KEY = new Map(APTITUDE_OPTIONS.map((option, index) => [option.key, index]));
 
 export const getAptitudeOption = (key: number): AptitudeOption | undefined => APTITUDE_BY_KEY.get(key);
+
+export const APTITUDE_GRADE_ORDER: AptitudeGrade[] = ["G", "F", "E", "D", "C", "B", "A", "S"];
+
+const APTITUDE_GRADE_INDEX = new Map<AptitudeGrade, number>(
+    APTITUDE_GRADE_ORDER.map((grade, index) => [grade, index]),
+);
+const APTITUDE_A_GRADE_INDEX = APTITUDE_GRADE_INDEX.get("A")!;
+const APTITUDE_S_GRADE_INDEX = APTITUDE_GRADE_INDEX.get("S")!;
+
+export const getAptitudeGradeIndex = (grade: AptitudeGrade | null | undefined): number | null =>
+    grade ? APTITUDE_GRADE_INDEX.get(grade) ?? null : null;
+
+// Initial inheritance: the first rank costs 1★, then each further rank costs 3★.
+// A total of 10★ gives four ranks, which is the maximum.
+export const getStarGradeUps = (stars: number): number =>
+    stars <= 0 ? 0 : Math.min(4, Math.ceil(stars / 3));
+
+// Initial inheritance can raise an aptitude to A, but never to S. S only comes
+// from the two mid-run spark proc inheritance events.
+export const getStartingAptitudeGrade = (
+    baseGrade: AptitudeGrade | null | undefined,
+    stars: number,
+): AptitudeGrade | null => {
+    const baseIndex = getAptitudeGradeIndex(baseGrade);
+    if (baseIndex === null) return null;
+
+    const index = baseIndex >= APTITUDE_A_GRADE_INDEX
+        ? baseIndex
+        : Math.min(APTITUDE_A_GRADE_INDEX, baseIndex + getStarGradeUps(stars));
+    return APTITUDE_GRADE_ORDER[index];
+};
+
+export const getProcsNeededForS = (startingGrade: AptitudeGrade | null | undefined): number => {
+    const index = getAptitudeGradeIndex(startingGrade);
+    if (index === null) return 1;
+    return Math.max(0, APTITUDE_S_GRADE_INDEX - index);
+};
+
+export const getTargetBaseAptitudeGrade = (
+    targetCharaId: number | null,
+    aptitudeKey: number,
+): AptitudeGrade | null => {
+    if (targetCharaId === null) return null;
+
+    const index = APTITUDE_INDEX_BY_KEY.get(aptitudeKey);
+    if (index === undefined) return null;
+
+    return getCharacterBaseAptitudes(targetCharaId)?.[index] ?? null;
+};
 
 export type AptitudeSourceSlot = "self" | "gp1" | "gp2";
 
@@ -88,12 +141,16 @@ export type BestComboScoreWeights = {
     sTarget: number;
     spark: number;
     stat: number;
+    parentSkill: number;
+    parentPink: number;
 };
 
 export const DEFAULT_BEST_COMBO_SCORE_WEIGHTS: BestComboScoreWeights = {
     sTarget: 4,
     spark: 10,
     stat: 1,
+    parentSkill: 0.5,
+    parentPink: 1,
 };
 
 export type StatKey = "speed" | "stamina" | "power" | "guts" | "wit";
@@ -125,6 +182,20 @@ export type BestComboScoreBreakdown = {
     statSources: StatSourceBreakdownMap;
 };
 
+export type BestComboMode = "target" | "gp";
+
+export type GpSkillChance = {
+    name: string;
+    factorId: number;
+    parentOwners: number;
+    lineageMembers: number;
+    inheritChance: number;
+    spawnChance: number;
+    combinedChance: number;
+    value: number;
+    contribution: number;
+};
+
 export type BestComboConditionMetric = "stars" | "sparks";
 
 export type BestComboCondition = {
@@ -134,11 +205,23 @@ export type BestComboCondition = {
     min: number;
 };
 
+export type AptitudeSChanceDetail = {
+    aptitudeKey: number;
+    baseGrade: AptitudeGrade | null;
+    startingGrade: AptitudeGrade;
+    stars: number;
+    gradeUps: number;
+    procsNeeded: number;
+    procChances: number[];
+    chance: number;
+};
+
 export type BestComboResult = {
     parent1: Veteran;
     parent2: Veteran;
     totals: Map<number, AptitudeTotals>;
     sChances: Map<number, number>;
+    sChanceDetails: Map<number, AptitudeSChanceDetail>;
     combinedSChance: number;
     minSAptitudeChance: number;
     relevantStars: number;
@@ -146,6 +229,9 @@ export type BestComboResult = {
     conditionValues: number[];
     inheritanceScore: number;
     scoreBreakdown: BestComboScoreBreakdown;
+    gpSkills: GpSkillChance[];
+    gpSkillScore: number;
+    gpPinkScore: number;
     firstTree: Record<AptitudeSourceSlot, number>;
     secondTree: Record<AptitudeSourceSlot, number>;
 };
@@ -270,14 +356,14 @@ const combineTotals = (
     return combined;
 };
 
-const getAptitudeSChance = (
+const getAptitudeProcDistribution = (
     aptitudeKey: number,
     first: VeteranAptitudeData,
     second: VeteranAptitudeData,
     firstTree: Record<AptitudeSourceSlot, number>,
     secondTree: Record<AptitudeSourceSlot, number>,
-): number => {
-    let nonePerInheritance = 1;
+): number[] => {
+    let singleEvent = [1];
 
     const applyEntries = (
         entries: AptitudeSparkEntry[] | undefined,
@@ -286,7 +372,14 @@ const getAptitudeSChance = (
         for (const entry of entries ?? []) {
             const chance = calculateSparkChance(2, entry.factorId, entry.level, tree[entry.sourceSlot]);
             if (chance === null) continue;
-            nonePerInheritance *= Math.max(0, 1 - chance / 100);
+
+            const probability = Math.max(0, Math.min(1, chance / 100));
+            const next = new Array(singleEvent.length + 1).fill(0);
+            for (let procs = 0; procs < singleEvent.length; procs++) {
+                next[procs] += singleEvent[procs] * (1 - probability);
+                next[procs + 1] += singleEvent[procs] * probability;
+            }
+            singleEvent = next;
         }
     };
 
@@ -294,7 +387,27 @@ const getAptitudeSChance = (
     applyEntries(second.entriesByAptitude.get(aptitudeKey), secondTree);
 
     // Two mid-run inheritance events, each rolling the same lineages.
-    return (1 - nonePerInheritance * nonePerInheritance) * 100;
+    const total = new Array(singleEvent.length * 2 - 1).fill(0);
+    for (let firstProcs = 0; firstProcs < singleEvent.length; firstProcs++) {
+        for (let secondProcs = 0; secondProcs < singleEvent.length; secondProcs++) {
+            total[firstProcs + secondProcs] += singleEvent[firstProcs] * singleEvent[secondProcs];
+        }
+    }
+    return total;
+};
+
+const getAptitudeProcChances = (distribution: number[], maxProcs: number): number[] => {
+    const chances: number[] = [];
+
+    for (let needed = 1; needed <= maxProcs; needed++) {
+        let chance = 0;
+        for (let procs = needed; procs < distribution.length; procs++) {
+            chance += distribution[procs];
+        }
+        chances.push(chance * 100);
+    }
+
+    return chances;
 };
 
 const getGrandparent = (veteran: Veteran, positionId: 10 | 20) =>
@@ -315,6 +428,14 @@ const BLUE_STAT_BY_KEY: Record<number, StatKey> = {
     3: "power",
     4: "guts",
     5: "wit",
+};
+
+const BLUE_MULTIPLIER_KEY_BY_STAT: Record<StatKey, string> = {
+    speed: "1",
+    stamina: "2",
+    power: "3",
+    guts: "4",
+    wit: "5",
 };
 
 // G1 race factor stats from GameTora's G1 race spark list.
@@ -482,8 +603,11 @@ const getComboScore = (
         0,
     );
     const sparks = sparkScore * weights.spark;
-    const rawStats = STAT_KEYS.reduce((total, stat) => total + statGains[stat], 0);
-    const stats = rawStats * weights.stat;
+    const statScore = STAT_KEYS.reduce((total, stat) => {
+        const multiplier = customConfig.blueMultipliers[BLUE_MULTIPLIER_KEY_BY_STAT[stat]] ?? 1;
+        return total + statGains[stat] * multiplier;
+    }, 0);
+    const stats = statScore * weights.stat;
 
     return {
         sTargets,
@@ -492,6 +616,184 @@ const getComboScore = (
         total: sTargets + sparks + stats,
         statGains,
         statSources,
+    };
+};
+
+let skillRarityByName: Map<string, number> | null = null;
+
+const getSkillSpawnBaseChance = (skillName: string): number => {
+    if (!skillRarityByName) {
+        skillRarityByName = new Map();
+        for (const skill of Object.values(UMDatabaseWrapper.skills)) {
+            if (!skill.name) continue;
+            skillRarityByName.set(
+                skill.name,
+                Math.max(skillRarityByName.get(skill.name) ?? 0, skill.rarity ?? 0),
+            );
+        }
+    }
+
+    if ((skillRarityByName.get(skillName) ?? 0) >= 2) return 40;
+    if (/[○◎]/.test(skillName)) return 25;
+    return 20;
+};
+
+let whiteSkillKeyByName: Map<string, number> | null = null;
+
+const getWhiteSkillValueByName = (
+    skillName: string,
+    config: CustomScoringConfig,
+): { value: number; factorId: number } | null => {
+    if (!whiteSkillKeyByName) {
+        whiteSkillKeyByName = new Map();
+        const textData = UMDatabaseWrapper.textData[147] ?? {};
+
+        for (const [indexText, text] of Object.entries(textData)) {
+            const factorId = Number(indexText);
+            if (!Number.isFinite(factorId) || getFactorCategory(factorId) !== 5 || !text.text) {
+                continue;
+            }
+            if (!whiteSkillKeyByName.has(text.text)) {
+                whiteSkillKeyByName.set(text.text, Math.floor(factorId / 100));
+            }
+        }
+    }
+
+    const factorKey = whiteSkillKeyByName.get(skillName);
+    if (factorKey === undefined) return null;
+
+    const factorId = factorKey * 100 + 3;
+    let value = 0;
+
+    // Target-guaranteed skills should still appear when they are not in the active style preset.
+    for (const styleWeights of Object.values(config.skillSparkWeights)) {
+        const weights = styleWeights?.[String(factorKey)];
+        if (weights) {
+            value = Math.max(value, weights[2] ?? 0);
+        }
+    }
+
+    return value > 0 ? { value, factorId } : null;
+};
+
+const getGpSkillScore = (
+    first: VeteranAptitudeData,
+    second: VeteranAptitudeData,
+    firstTree: Record<AptitudeSourceSlot, number>,
+    secondTree: Record<AptitudeSourceSlot, number>,
+    customConfig: CustomScoringConfig,
+    weights: BestComboScoreWeights,
+    guaranteedTargetSkills: Set<string>,
+): { score: number; skillScore: number; pinkScore: number; skills: GpSkillChance[] } => {
+    const groups = new Map<string, {
+        nonePerInheritance: number;
+        value: number;
+        factorId: number;
+        lineageMembers: Set<string>;
+        parentOwners: Set<number>;
+    }>();
+
+    const addFactors = (
+        factors: FactorItem[],
+        tree: Record<AptitudeSourceSlot, number>,
+        parentIndex: number,
+    ) => {
+        for (const factor of factors) {
+            if (factor.category !== 5) continue;
+
+            const perInheritance = calculateSparkChance(
+                factor.category,
+                factor.factorId,
+                factor.level,
+                tree[factor.sourceSlot],
+            );
+            if (perInheritance === null) continue;
+
+            const group = groups.get(factor.name) ?? {
+                nonePerInheritance: 1,
+                value: 0,
+                factorId: factor.factorId,
+                lineageMembers: new Set<string>(),
+                parentOwners: new Set<number>(),
+            };
+
+            group.nonePerInheritance *= Math.max(0, 1 - perInheritance / 100);
+            group.value = Math.max(group.value, getSparkScoreValue(factor, customConfig));
+            group.lineageMembers.add(`${parentIndex}:${factor.sourceSlot}`);
+            if (factor.sourceSlot === "self") {
+                group.parentOwners.add(parentIndex);
+            }
+            groups.set(factor.name, group);
+        }
+    };
+
+    addFactors(first.allFactors, firstTree, 1);
+    addFactors(second.allFactors, secondTree, 2);
+
+    for (const skillName of guaranteedTargetSkills) {
+        const preset = getWhiteSkillValueByName(skillName, customConfig);
+        if (!preset) continue;
+
+        const group = groups.get(skillName) ?? {
+            nonePerInheritance: 1,
+            value: 0,
+            factorId: preset.factorId,
+            lineageMembers: new Set<string>(),
+            parentOwners: new Set<number>(),
+        };
+        group.value = Math.max(group.value, preset.value);
+        groups.set(skillName, group);
+    }
+
+    const skills: GpSkillChance[] = [];
+    let skillScore = 0;
+
+    for (const [name, group] of groups) {
+        if (group.value <= 0) continue;
+
+        const lineageMembers = group.lineageMembers.size;
+        const parentOwners = group.parentOwners.size;
+        const inheritChance = guaranteedTargetSkills.has(name)
+            ? 100
+            : (1 - group.nonePerInheritance * group.nonePerInheritance) * 100;
+        const spawnChance = Math.min(100, getSkillSpawnBaseChance(name) * Math.pow(1.1, lineageMembers));
+        const combinedChance = inheritChance * spawnChance / 100;
+        const parentMultiplier = 1 + weights.parentSkill * parentOwners;
+        const contribution = group.value * (combinedChance / 100) * weights.spark * parentMultiplier;
+
+        skills.push({
+            name,
+            factorId: group.factorId,
+            parentOwners,
+            lineageMembers,
+            inheritChance,
+            spawnChance,
+            combinedChance,
+            value: group.value,
+            contribution,
+        });
+        skillScore += contribution;
+    }
+
+    skills.sort((a, b) =>
+        b.contribution - a.contribution
+        || b.combinedChance - a.combinedChance
+        || a.name.localeCompare(b.name),
+    );
+
+    let pinkScore = 0;
+    for (const factor of [...first.allFactors, ...second.allFactors]) {
+        if (factor.category === 2 && factor.sourceSlot === "self") {
+            pinkScore += getSparkScoreValue(factor, customConfig);
+        }
+    }
+    pinkScore *= weights.parentPink;
+
+    return {
+        score: skillScore + pinkScore,
+        skillScore,
+        pinkScore,
+        skills,
     };
 };
 
@@ -505,6 +807,8 @@ export const evaluateBestCombos = (
     requiredParent1CharaId?: number | null,
     requiredParent2CharaId?: number | null,
     scoreWeights: BestComboScoreWeights = DEFAULT_BEST_COMBO_SCORE_WEIGHTS,
+    pairFilter?: (first: Veteran, second: Veteran) => boolean,
+    mode: BestComboMode = "target",
 ): BestComboEvaluation => {
     const dataMap = dataByVeteran ?? new Map(veterans.map(veteran => [veteran, buildVeteranAptitudeData(veteran)]));
     const soloAffinity = new Map<Veteran, number>();
@@ -521,6 +825,11 @@ export const evaluateBestCombos = (
     let evaluatedCount = 0;
     const requiredParent1 = requiredParent1CharaId ?? null;
     const requiredParent2 = requiredParent2CharaId ?? null;
+    const targetName = UMDatabaseWrapper.charas[targetCharaId]?.name;
+    const targetBaseAptitudes = getCharacterBaseAptitudes(targetCharaId);
+    const guaranteedTargetSkills = mode === "gp"
+        ? getGuaranteedCharacterSkills(targetCharaId)
+        : new Set<string>();
 
     for (let i = 0; i < veterans.length; i++) {
         const parent1 = veterans[i];
@@ -540,6 +849,17 @@ export const evaluateBestCombos = (
             if (parent1CharaId === parent2CharaId || (!!parent1Name && parent1Name === parent2Name)) {
                 continue;
             }
+
+            // An Uma cannot be its own parent.
+            if (
+                parent1CharaId === targetCharaId
+                || parent2CharaId === targetCharaId
+                || (!!targetName && (parent1Name === targetName || parent2Name === targetName))
+            ) {
+                continue;
+            }
+
+            if (pairFilter && !pairFilter(parent1, parent2)) continue;
 
             if (requiredParent1 !== null && requiredParent2 !== null) {
                 const forwardMatch = parent1CharaId === requiredParent1 && parent2CharaId === requiredParent2;
@@ -590,29 +910,75 @@ export const evaluateBestCombos = (
 
             const totals = combineTotals(first.totals, second.totals);
             const sChances = new Map<number, number>();
+            const sChanceDetails = new Map<number, AptitudeSChanceDetail>();
             let combinedSChance = 1;
             let minSAptitudeChance = 100;
             let relevantStars = 0;
 
             for (const aptitudeKey of sAptitudeKeys) {
-                const chance = getAptitudeSChance(aptitudeKey, first, second, firstTree, secondTree);
+                const stars = totals.get(aptitudeKey)?.stars ?? 0;
+                const baseGrade = targetBaseAptitudes?.[APTITUDE_INDEX_BY_KEY.get(aptitudeKey) ?? -1] ?? null;
+                const startingGrade = getStartingAptitudeGrade(baseGrade, stars) ?? "A";
+                const procsNeeded = getProcsNeededForS(startingGrade);
+                const procChances = getAptitudeProcChances(
+                    getAptitudeProcDistribution(aptitudeKey, first, second, firstTree, secondTree),
+                    procsNeeded,
+                );
+                const chance = procsNeeded <= 0 ? 100 : procChances[procsNeeded - 1] ?? 0;
+
                 sChances.set(aptitudeKey, chance);
+                sChanceDetails.set(aptitudeKey, {
+                    aptitudeKey,
+                    baseGrade,
+                    startingGrade,
+                    stars,
+                    gradeUps: getStarGradeUps(stars),
+                    procsNeeded,
+                    procChances,
+                    chance,
+                });
                 combinedSChance *= chance / 100;
                 minSAptitudeChance = Math.min(minSAptitudeChance, chance);
-                relevantStars += totals.get(aptitudeKey)?.stars ?? 0;
+                relevantStars += stars;
             }
 
+            let gpSkills: GpSkillChance[] = [];
+            let gpSkillScore = 0;
+            let gpPinkScore = 0;
             const scoreBreakdown = scoringConfig
-                ? getComboScore(
-                    first,
-                    second,
-                    firstTree,
-                    secondTree,
-                    sAptitudeKeys,
-                    sChances,
-                    scoringConfig,
-                    scoreWeights,
-                )
+                ? mode === "gp"
+                    ? (() => {
+                        const gpScore = getGpSkillScore(
+                            first,
+                            second,
+                            firstTree,
+                            secondTree,
+                            scoringConfig,
+                            scoreWeights,
+                            guaranteedTargetSkills,
+                        );
+                        gpSkills = gpScore.skills;
+                        gpSkillScore = gpScore.skillScore;
+                        gpPinkScore = gpScore.pinkScore;
+                        return {
+                            sTargets: 0,
+                            sparks: gpScore.skillScore + gpScore.pinkScore,
+                            stats: 0,
+                            total: gpScore.score,
+                            statGains: createStatGains(),
+                            statSources: createStatSources(),
+                        };
+                    })()
+                    : getComboScore(
+                        first,
+                        second,
+                        firstTree,
+                        secondTree,
+                        sAptitudeKeys,
+                        sChances,
+                        scoringConfig,
+                        scoreWeights,
+                    )
                 : {
                     sTargets: 0,
                     sparks: 0,
@@ -627,6 +993,7 @@ export const evaluateBestCombos = (
                 parent2,
                 totals,
                 sChances,
+                sChanceDetails,
                 combinedSChance: sAptitudeKeys.length > 0 ? combinedSChance * 100 : 0,
                 minSAptitudeChance: sAptitudeKeys.length > 0 ? minSAptitudeChance : 0,
                 relevantStars,
@@ -634,6 +1001,9 @@ export const evaluateBestCombos = (
                 conditionValues,
                 inheritanceScore: scoreBreakdown.total,
                 scoreBreakdown,
+                gpSkills,
+                gpSkillScore,
+                gpPinkScore,
                 firstTree,
                 secondTree,
             });
@@ -641,7 +1011,8 @@ export const evaluateBestCombos = (
     }
 
     results.sort((a, b) =>
-        b.combinedSChance - a.combinedSChance
+        b.inheritanceScore - a.inheritanceScore
+        || b.combinedSChance - a.combinedSChance
         || b.minSAptitudeChance - a.minSAptitudeChance
         || b.relevantStars - a.relevantStars
         || b.affinity - a.affinity,

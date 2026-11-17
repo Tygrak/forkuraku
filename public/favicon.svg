@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="forkuraku">
+  <defs>
+    <linearGradient id="bg" x1="8" y1="4" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#24263f"/>
+      <stop offset="1" stop-color="#0f1019"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <rect x="2" y="2" width="60" height="60" rx="12" fill="none" stroke="#ffffff" stroke-opacity=".08" stroke-width="2"/>
+
+  <!-- fork, behind the carrot -->
+  <g fill="#f3ead8">
+    <rect x="30" y="31" width="5" height="26" rx="2.5"/>
+    <rect x="20" y="27" width="25" height="5" rx="2.5"/>
+    <rect x="20" y="4" width="4" height="25" rx="2"/>
+    <rect x="27" y="3" width="4" height="26" rx="2"/>
+    <rect x="34" y="4" width="4" height="25" rx="2"/>
+    <rect x="41" y="5" width="4" height="24" rx="2"/>
+  </g>
+
+  <!-- carrot on top, pierced by the fork tines -->
+  <g transform="rotate(-3 32 19)" stroke="#0f1019" stroke-width="1.5" stroke-linejoin="round">
+    <path d="M9 19c5-5 16-8 29-8h11c6 0 8 4 4 8 4 4 2 8-4 8H38c-13 0-24-3-29-8z" fill="#ff9f43"/>
+    <path d="M51 15c3-6 8-10 11-10-1 6-4 11-8 14z" fill="#7ed957"/>
+    <path d="M49 14c1-6 4-11 7-13 2 6 0 12-3 16z" fill="#98e06b"/>
+    <path d="M53 21c5-3 10-4 12-3-3 5-7 7-11 6z" fill="#65c94d"/>
+    <path d="M19 17h27" fill="none" stroke="#f08a2c" stroke-width="2" stroke-linecap="round" opacity=".65"/>
+    <path d="M21 22h24" fill="none" stroke="#f08a2c" stroke-width="2" stroke-linecap="round" opacity=".5"/>
+  </g>
+</svg>

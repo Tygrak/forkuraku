@@ -3,7 +3,7 @@ import { FactorItem, aggregateFactors, calculatePairAffinity, getFactorCategory 
 import { CustomScoringConfig, CustomScoreMode, PinkPresetKey, SkillSparkStyle, StarWeights, Veteran } from "./types";
 
 export const CUSTOM_SCORING_STORAGE_KEY = "hakuraku.veterans.customScoring.v1";
-export const CUSTOM_SCORING_CONFIG_VERSION = 4;
+export const CUSTOM_SCORING_CONFIG_VERSION = 5;
 
 export type BlueStatDefinition = {
     key: string;
@@ -132,8 +132,8 @@ const TIER_WEIGHTS: Record<string, StarWeights> = {
     T0: [3, 5, 8],
     "Pseudo T0": [1, 3, 5],
     "T0.5": [1, 2.5, 4],
-    T1: [1, 2, 3],
-    "T1.5": [1, 2, 3],
+    T1: [1.2, 2.4, 3.6],
+    "T1.5": [1.1, 2.2, 3.3],
     T2: [1, 2, 3],
     T3: [0.5, 1, 2],
     "T3.5": [0.5, 1, 1.5],
@@ -508,6 +508,28 @@ const normalizeConfig = (value: unknown): CustomScoringConfig => {
                     if (styleWeights[key]) {
                         styleWeights[key] = [...preset.defaultWeights] as StarWeights;
                     }
+                }
+            }
+        }
+    }
+
+    if (sourceConfigVersion < 5) {
+        const oldDefault: StarWeights = [1, 2, 3];
+
+        for (const definition of SKILL_SPARK_STYLE_DEFINITIONS) {
+            const styleWeights = skillSparkWeights[definition.key];
+
+            for (const preset of WHITE_SPARK_PRESETS_BY_STYLE[definition.key]) {
+                if (preset.tier !== "T1" && preset.tier !== "T1.5") continue;
+
+                const key = String(preset.key);
+                const current = styleWeights[key];
+                if (
+                    current
+                    && current.length === oldDefault.length
+                    && current.every((value, index) => value === oldDefault[index])
+                ) {
+                    styleWeights[key] = [...preset.defaultWeights] as StarWeights;
                 }
             }
         }

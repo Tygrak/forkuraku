@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Alert, Button, ButtonGroup, Form } from "react-bootstrap";
 import AssetLoader from "../../data/AssetLoader";
 import UMDatabaseWrapper from "../../data/UMDatabaseWrapper";
-import { CustomScoringConfig, Veteran } from "./types";
-import { formatCardName, getCardName, getCharaImageUrl, getFactorColor } from "./VeteransUIHelper";
+import { isPlayableCharacter } from "../../data/GameToraCharacterSkills";
+import { CustomScoringConfig, BaseFilter, Veteran } from "./types";
+import { formatCardName, getCardName, getCharaImageUrl, getFactorColor, getRankGradeLabel } from "./VeteransUIHelper";
 import CustomScoringPanel from "./CustomScoringPanel";
+import FilterToolbar from "./FilterToolbar";
+import ActiveFiltersList from "./ActiveFiltersList";
+import ParentCharacterFilter from "./ParentCharacterFilter";
 import {
     APTITUDE_GROUP_LABELS,
     APTITUDE_OPTIONS,
@@ -14,11 +18,15 @@ import {
     buildVeteranAptitudeData,
     combineSparkBreakdowns,
     BestComboScoreWeights,
+    BestComboMode,
     DEFAULT_BEST_COMBO_SCORE_WEIGHTS,
     evaluateBestCombos,
     ExpectedSpark,
+    GpSkillChance,
     getAptitudeOption,
     getSparkInheritanceBreakdown,
+    getStartingAptitudeGrade,
+    getTargetBaseAptitudeGrade,
     STAT_KEYS,
     STAT_LABELS,
     StatSourceBreakdown,
@@ -31,6 +39,26 @@ type Props = {
     onScoringChange: (config: CustomScoringConfig) => void;
     maxGpAffinity: number;
     maxRaceWins: number;
+    moeVeterans: Veteran[];
+    moeSearching: boolean;
+    moeError: string;
+    moeSearchIsCurrent: boolean;
+    moeCanLoadMore: boolean;
+    onSearchMoe: () => void;
+    moeFilters: {
+        blues: BaseFilter[];
+        aptitude: BaseFilter[];
+        uniques: BaseFilter[];
+        races: BaseFilter[];
+        skills: BaseFilter[];
+    };
+    parentCharaIds: number[];
+    onParentCharaIdsChange: (characterIds: number[]) => void;
+    onAddFilter: (stateKey: string, filter: BaseFilter) => void;
+    onRemoveFilter: (stateKey: string, filterId: string) => void;
+    onClearFilters: () => void;
+    getAvailableFilterStats: (categoryId: number) => string[];
+    mode?: BestComboMode;
 };
 
 type RankMode = "score" | "sChance";
@@ -38,6 +66,26 @@ type RankMode = "score" | "sChance";
 const APTITUDE_GROUPS: AptitudeGroup[] = ["Ground", "Distance", "Strategy"];
 const RESULT_PAGE_SIZE = 25;
 const BEST_COMBO_SCORE_WEIGHTS_KEY = "hakuraku.veterans.bestComboScoreWeights.v2";
+const LAST_TARGET_UMA_KEY = "forkuraku.veterans.lastTargetUma";
+
+const loadLastTargetUma = (): number | null => {
+    if (typeof localStorage === "undefined") return null;
+
+    try {
+        const raw = localStorage.getItem(LAST_TARGET_UMA_KEY);
+        if (!raw) return null;
+
+        const charaId = Number(raw);
+        return Number.isInteger(charaId)
+            && charaId > 0
+            && !!UMDatabaseWrapper.charas[charaId]?.name
+            && isPlayableCharacter(charaId)
+            ? charaId
+            : null;
+    } catch {
+        return null;
+    }
+};
 
 const normalizeScoreWeight = (value: unknown, fallback: number): number =>
     typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : fallback;
@@ -53,6 +101,8 @@ const loadScoreWeights = (): BestComboScoreWeights => {
             sTarget: normalizeScoreWeight(parsed.sTarget, DEFAULT_BEST_COMBO_SCORE_WEIGHTS.sTarget),
             spark: normalizeScoreWeight(parsed.spark, DEFAULT_BEST_COMBO_SCORE_WEIGHTS.spark),
             stat: normalizeScoreWeight(parsed.stat, DEFAULT_BEST_COMBO_SCORE_WEIGHTS.stat),
+            parentSkill: normalizeScoreWeight(parsed.parentSkill, DEFAULT_BEST_COMBO_SCORE_WEIGHTS.parentSkill),
+            parentPink: normalizeScoreWeight(parsed.parentPink, DEFAULT_BEST_COMBO_SCORE_WEIGHTS.parentPink),
         };
     } catch {
         return { ...DEFAULT_BEST_COMBO_SCORE_WEIGHTS };
@@ -78,29 +128,7 @@ const formatStatBreakdown = (sources: StatSourceBreakdown): string => [
     `Blue mid-run: +${sources.blueMid.toFixed(1)}`,
     `Race: +${sources.race.toFixed(1)}`,
     `Scenario: +${sources.scenario.toFixed(1)}`,
-    "Unique: skill hint / stat cap only",
 ].join("\n");
-
-const uniqueSparks = (entries: ExpectedSpark[]): ExpectedSpark[] => {
-    const seen = new Set<string>();
-    return entries.filter(entry => {
-        const key = `${entry.category}:${entry.name}:${entry.level}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
-};
-
-const getParentSparkSummary = (breakdown: ExpectedSpark[]) => {
-    const own = breakdown.filter(entry => entry.sourceSlot === "self");
-    const blue = own.filter(entry => entry.category === 1);
-    const maxBlueLevel = blue.reduce((max, entry) => Math.max(max, entry.level), 0);
-
-    return {
-        mainStats: uniqueSparks(blue.filter(entry => entry.level === maxBlueLevel)),
-        aptitudes: uniqueSparks(own.filter(entry => entry.category === 2)),
-    };
-};
 
 const SparkBreakdownDetails = ({
     breakdown,
@@ -133,7 +161,7 @@ const SparkBreakdownDetails = ({
                                         <span
                                             className={`best-combo-spark${entry.isGold ? " gold" : ""}`}
                                             key={`${entry.factorId}-${entry.sourceSlot}-${index}`}
-                                            title={`${entry.level}★ from ${entry.sourceSlot === "self" ? "parent" : entry.sourceSlot.toUpperCase()} · ${formatPercent(entry.chance)} over the full run`}
+                                            title={`${entry.level}★ from ${entry.sourceSlot === "self" ? "parent" : entry.sourceSlot.toUpperCase()}, ${formatPercent(entry.chance)} over the full run`}
                                         >
                                             <span className="best-combo-spark-source">
                                                 {entry.sourceSlot === "self" ? "P" : entry.sourceSlot.toUpperCase()}
@@ -173,7 +201,7 @@ const CombinedSparkDetails = ({
             onToggle={event => setOpen(event.currentTarget.open)}
         >
             <summary>
-                Combined spark inherit % (all copies · {combined.length} unique)
+                Combined spark inherit % (all copies, {combined.length} unique)
             </summary>
             {open && (
                 <div className="best-combo-spark-groups">
@@ -191,7 +219,7 @@ const CombinedSparkDetails = ({
                                         <span
                                             className={`best-combo-spark${entry.isGold ? " gold" : ""}`}
                                             key={`${entry.category}-${entry.name}`}
-                                            title={`${entry.stars}★ across ${entry.copies} spark${entry.copies === 1 ? "" : "s"} · ${formatPercent(entry.chance)} total chance over the full run`}
+                                            title={`${entry.stars}★ across ${entry.copies} spark${entry.copies === 1 ? "" : "s"}, ${formatPercent(entry.chance)} total chance over the full run`}
                                         >
                                             <span style={{ color: getFactorColor(entry.factorId, config) }}>
                                                 {entry.name}
@@ -215,6 +243,152 @@ const CombinedSparkDetails = ({
     );
 };
 
+const GP_PARENT_SPARK_CATEGORIES = [
+    { category: 1, label: "Blue" },
+    { category: 2, label: "Pink" },
+    { category: 3, label: "Unique" },
+];
+
+const ParentOwnedSparkSummary = ({
+    breakdown,
+    config,
+}: {
+    breakdown: ExpectedSpark[];
+    config: any;
+}) => {
+    const owned = breakdown.filter(entry =>
+        entry.sourceSlot === "self" && entry.category >= 1 && entry.category <= 3,
+    );
+
+    return (
+        <div className="best-combo-parent-owned-sparks">
+            {GP_PARENT_SPARK_CATEGORIES.map(category => {
+                const entries = owned.filter(entry => entry.category === category.category);
+
+                return (
+                    <div className="best-combo-parent-owned-spark-group" key={category.category}>
+                        <span className="best-combo-parent-owned-spark-label">
+                            {category.label}
+                        </span>
+                        <div className="best-combo-parent-owned-spark-chips">
+                            {entries.length === 0 ? (
+                                <span className="best-combo-parent-owned-spark-empty">None</span>
+                            ) : entries.map((entry, index) => (
+                                <span
+                                    className="best-combo-parent-owned-spark"
+                                    key={`${entry.factorId}-${index}`}
+                                    title={`${category.label} spark, ${entry.level}★`}
+                                >
+                                    <span style={{ color: getFactorColor(entry.factorId, config) }}>
+                                        {entry.name}
+                                    </span>
+                                    <span className="best-combo-parent-owned-spark-stars">
+                                        {entry.level}★
+                                    </span>
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
+    );
+};
+
+const GpSkillDetails = ({
+    skills,
+    config,
+}: {
+    skills: GpSkillChance[];
+    config: any;
+}) => {
+    const [open, setOpen] = useState(false);
+
+    if (skills.length === 0) {
+        return (
+            <div className="best-combo-gp-skills">
+                <span className="best-combo-no-factors">No desired skill sparks in this lineage.</span>
+            </div>
+        );
+    }
+
+    return (
+        <div className="best-combo-gp-skills">
+            <div className="best-combo-gp-summary">
+                <span className="best-combo-stat-gains-title">Skill sparks</span>
+                {skills.slice(0, 3).map(skill => (
+                    <span className="best-combo-gp-skill" key={skill.name}>
+                        <span style={{ color: getFactorColor(skill.factorId, config) }}>{skill.name}</span>
+                        <span>{skill.parentOwners}/2 parents</span>
+                        <span>{skill.lineageMembers}/6 lineage</span>
+                        <span>{skill.inheritChance.toFixed(1)}% inherit</span>
+                        <span>{skill.spawnChance.toFixed(1)}% spawn</span>
+                        <span>{skill.combinedChance.toFixed(1)}% both</span>
+                    </span>
+                ))}
+                {skills.length > 3 && (
+                    <span className="best-combo-hint">+{skills.length - 3} more</span>
+                )}
+            </div>
+            <details
+                className="best-combo-details"
+                onToggle={event => setOpen(event.currentTarget.open)}
+            >
+                <summary>All skill spark odds ({skills.length})</summary>
+                {open && (
+                    <div className="best-combo-gp-skill-list">
+                        {skills.map(skill => (
+                            <div className="best-combo-gp-skill-row" key={skill.name}>
+                                <span style={{ color: getFactorColor(skill.factorId, config) }}>
+                                    {skill.name}
+                                </span>
+                                <span>{skill.parentOwners}/2 parents</span>
+                                <span>{skill.lineageMembers}/6 lineage</span>
+                                <span>{skill.inheritChance.toFixed(1)}% inherit</span>
+                                <span>{skill.spawnChance.toFixed(1)}% spawn</span>
+                                <span>{skill.combinedChance.toFixed(1)}% both</span>
+                                <span>{skill.contribution.toFixed(1)} pts</span>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </details>
+        </div>
+    );
+};
+
+const MoeFriendCodeButton = ({ veteran }: { veteran: Veteran }) => {
+    const [copied, setCopied] = useState(false);
+    const friendCode = veteran.uma_moe_account_id;
+
+    if (!friendCode) return null;
+
+    const copyFriendCode = async (event: MouseEvent<HTMLButtonElement>) => {
+        event.stopPropagation();
+
+        try {
+            await navigator.clipboard.writeText(friendCode);
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+        } catch {
+            // Clipboard access can be unavailable; leave the label unchanged.
+        }
+    };
+
+    return (
+        <button
+            type="button"
+            className="vet-badge friend-code vet-friend-code-button best-combo-friend-code"
+            title="Copy friend code"
+            onClick={copyFriendCode}
+        >
+            {copied
+                ? "Copied!"
+                : `${veteran.uma_moe_trainer_name?.trim() || "Trainer"} - ${friendCode}`}
+        </button>
+    );
+};
+
 const BestComboPanel = ({
     veterans,
     config,
@@ -222,14 +396,31 @@ const BestComboPanel = ({
     onScoringChange,
     maxGpAffinity,
     maxRaceWins,
+    moeVeterans,
+    moeSearching,
+    moeError,
+    moeSearchIsCurrent,
+    moeCanLoadMore,
+    onSearchMoe,
+    moeFilters,
+    parentCharaIds,
+    onParentCharaIdsChange,
+    onAddFilter,
+    onRemoveFilter,
+    onClearFilters,
+    getAvailableFilterStats,
+    mode = "target",
 }: Props) => {
-    const [targetCharaId, setTargetCharaId] = useState<number | null>(null);
+    const isGpMode = mode === "gp";
+    const [targetCharaId, setTargetCharaId] = useState<number | null>(loadLastTargetUma);
     const [sAptitudeKeys, setSAptitudeKeys] = useState<number[]>([]);
     const [conditions, setConditions] = useState<BestComboCondition[]>([]);
     const [visibleCount, setVisibleCount] = useState(RESULT_PAGE_SIZE);
     const [rankMode, setRankMode] = useState<RankMode>("score");
     const [requiredParent1, setRequiredParent1] = useState<number | null>(null);
     const [requiredParent2, setRequiredParent2] = useState<number | null>(null);
+    const [includeMoeParents, setIncludeMoeParents] = useState(false);
+    const [openMoeFilter, setOpenMoeFilter] = useState<string | null>(null);
     const [scoreWeights, setScoreWeights] = useState<BestComboScoreWeights>(loadScoreWeights);
     const nextConditionId = useRef(1);
 
@@ -241,19 +432,40 @@ const BestComboPanel = ({
         }
     }, [scoreWeights]);
 
+    useEffect(() => {
+        try {
+            if (targetCharaId === null) {
+                localStorage.removeItem(LAST_TARGET_UMA_KEY);
+            } else {
+                localStorage.setItem(LAST_TARGET_UMA_KEY, String(targetCharaId));
+            }
+        } catch {
+            // Storage may be unavailable; keep the in-memory selection.
+        }
+    }, [targetCharaId]);
+
     const charaOptions = useMemo(() => {
         return Object.values(UMDatabaseWrapper.charas)
-            .filter(chara => chara.id !== undefined && !!chara.name)
+            .filter(chara => chara.id !== undefined && !!chara.name && isPlayableCharacter(chara.id))
             .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
     }, []);
 
+    const evaluationVeterans = useMemo(
+        () => includeMoeParents && moeVeterans.length > 0
+            ? [...veterans, ...moeVeterans]
+            : veterans,
+        [includeMoeParents, veterans, moeVeterans],
+    );
+
+    const moeVeteranSet = useMemo(() => new Set(moeVeterans), [moeVeterans]);
+
     const aptitudeData = useMemo(() => {
         const data = new Map<Veteran, ReturnType<typeof buildVeteranAptitudeData>>();
-        for (const veteran of veterans) {
+        for (const veteran of evaluationVeterans) {
             data.set(veteran, buildVeteranAptitudeData(veteran));
         }
         return data;
-    }, [veterans]);
+    }, [evaluationVeterans]);
 
     const orderedSAptitudes = useMemo(
         () => APTITUDE_OPTIONS.filter(option => sAptitudeKeys.includes(option.key)),
@@ -276,24 +488,58 @@ const BestComboPanel = ({
         return minimums;
     }, [conditions]);
 
+    const starConditionSummaries = useMemo(() => {
+        if (targetCharaId === null) return [];
+
+        const summaries: Array<{
+            aptitudeKey: number;
+            option: NonNullable<ReturnType<typeof getAptitudeOption>>;
+            baseGrade: ReturnType<typeof getTargetBaseAptitudeGrade>;
+            startingGrade: NonNullable<ReturnType<typeof getStartingAptitudeGrade>>;
+            stars: number;
+        }> = [];
+
+        for (const [aptitudeKey, minimums] of conditionMinimums) {
+            const stars = minimums.stars ?? 0;
+            if (stars <= 0) continue;
+
+            const option = getAptitudeOption(aptitudeKey);
+            const baseGrade = getTargetBaseAptitudeGrade(targetCharaId, aptitudeKey);
+            const startingGrade = getStartingAptitudeGrade(baseGrade, stars);
+            if (!option || !startingGrade) continue;
+
+            summaries.push({ aptitudeKey, option, baseGrade, startingGrade, stars });
+        }
+
+        return summaries.sort((a, b) => a.option.label.localeCompare(b.option.label));
+    }, [conditionMinimums, targetCharaId]);
+
     const evaluation = useMemo(() => {
-        if (targetCharaId === null || orderedSAptitudes.length === 0 || veterans.length < 2) {
+        if (
+            targetCharaId === null
+            || evaluationVeterans.length < 2
+            || (!isGpMode && orderedSAptitudes.length === 0)
+        ) {
             return null;
         }
 
         return evaluateBestCombos(
-            veterans,
+            evaluationVeterans,
             targetCharaId,
-            orderedSAptitudes.map(option => option.key),
-            conditions,
+            isGpMode ? [] : orderedSAptitudes.map(option => option.key),
+            isGpMode ? [] : conditions,
             scoringConfig,
             aptitudeData,
             requiredParent1,
             requiredParent2,
             scoreWeights,
+            includeMoeParents
+                ? (first, second) => !(moeVeteranSet.has(first) && moeVeteranSet.has(second))
+                : undefined,
+            mode,
         );
     }, [
-        veterans,
+        evaluationVeterans,
         targetCharaId,
         orderedSAptitudes,
         conditions,
@@ -302,11 +548,23 @@ const BestComboPanel = ({
         requiredParent1,
         requiredParent2,
         scoreWeights,
+        includeMoeParents,
+        moeVeteranSet,
+        isGpMode,
+        mode,
     ]);
 
     const rankedResults = useMemo(() => {
         if (!evaluation) return [];
         const results = [...evaluation.results];
+
+        if (isGpMode) {
+            results.sort((a, b) =>
+                b.inheritanceScore - a.inheritanceScore
+                || b.affinity - a.affinity,
+            );
+            return results;
+        }
 
         results.sort((a, b) => {
             if (rankMode === "score" && b.inheritanceScore !== a.inheritanceScore) {
@@ -325,7 +583,7 @@ const BestComboPanel = ({
         });
 
         return results;
-    }, [evaluation, rankMode]);
+    }, [evaluation, rankMode, isGpMode]);
 
     const orientedResults = useMemo(() => {
         if (requiredParent1 === null && requiredParent2 === null) return rankedResults;
@@ -351,7 +609,7 @@ const BestComboPanel = ({
 
     useEffect(() => {
         setVisibleCount(RESULT_PAGE_SIZE);
-    }, [targetCharaId, sAptitudeKeys, conditions, rankMode, requiredParent1, requiredParent2]);
+    }, [targetCharaId, sAptitudeKeys, conditions, rankMode, requiredParent1, requiredParent2, includeMoeParents, moeVeterans, mode]);
 
     const updateParentRequirement = (side: 1 | 2, rawValue: string) => {
         const charaId = rawValue ? Number(rawValue) : null;
@@ -420,7 +678,7 @@ const BestComboPanel = ({
         }));
     };
 
-    const renderParent = (veteran: Veteran, slot: "p1" | "p2") => (
+    const renderParent = (veteran: Veteran, slot: "p1" | "p2", breakdown: ExpectedSpark[]) => (
         <div className="best-combo-parent" key={`${slot}-${veteran.trained_chara_id}`}>
             <img
                 className="best-combo-parent-img"
@@ -431,73 +689,55 @@ const BestComboPanel = ({
             <div className="best-combo-parent-copy">
                 <span className="best-combo-parent-name">{getParentLabel(veteran)}</span>
                 <span className="best-combo-parent-meta">
-                    Rank {veteran.rank} · {veteran.rank_score.toLocaleString()} pts
+                    Rank {getRankGradeLabel(veteran.rank)}, {veteran.rank_score.toLocaleString()} pts
                 </span>
+                <ParentOwnedSparkSummary breakdown={breakdown} config={config} />
+                <SparkBreakdownDetails breakdown={breakdown} config={config} />
+                {moeVeteranSet.has(veteran) && (
+                    <div className="best-combo-parent-moe-row">
+                        <span className="best-combo-moe-badge">uma.moe</span>
+                        <MoeFriendCodeButton veteran={veteran} />
+                    </div>
+                )}
             </div>
         </div>
     );
-
-    const renderParentBreakdown = (
-        veteran: Veteran,
-        breakdown: ExpectedSpark[],
-        label: string,
-    ) => {
-        const { mainStats, aptitudes } = getParentSparkSummary(breakdown);
-
-        const formatSparkSummary = (spark: ExpectedSpark) =>
-            `${spark.name} ${spark.level}★ (${formatPercent(spark.chance)})`;
-
-        return (
-            <div className="best-combo-breakdown-block" key={label}>
-                <div className="best-combo-breakdown-title">
-                    <span className="best-combo-breakdown-slot">{label}</span>
-                    {getParentLabel(veteran)}
-                </div>
-                <div className="best-combo-parent-summary">
-                    <span className="best-combo-summary-item">
-                        <span className="best-combo-summary-label">Main stat</span>{" "}
-                        {mainStats.length > 0 ? mainStats.map(formatSparkSummary).join(", ") : "None"}
-                    </span>
-                    <span className="best-combo-summary-item">
-                        <span className="best-combo-summary-label">Aptitude</span>{" "}
-                        {aptitudes.length > 0 ? aptitudes.map(formatSparkSummary).join(", ") : "None"}
-                    </span>
-                </div>
-                <SparkBreakdownDetails breakdown={breakdown} config={config} />
-            </div>
-        );
-    };
 
     return (
         <section className="vet-panel-card vet-best-combo-panel">
             <div className="vet-panel-header">
                 <div>
-                    <h2 className="vet-panel-title">Best parent combo</h2>
-                    <p className="vet-best-combo-description">
-                        Find the strongest pair from your owned veterans for a target Uma. Conditions use the
-                        total red sparks across both parents and their four grandparents. Pairs with the same
-                        Uma name are skipped.
-                    </p>
+                    <h2 className="vet-panel-title">
+                        {isGpMode ? "Best GP combo" : "Best parent combo"}
+                    </h2>
+                    {isGpMode && (
+                        <p className="vet-best-combo-description">
+                            Find the pair with the best chance to inherit and spawn desired skill sparks on the
+                            resulting GP. Spawn chance uses base rate × 1.1^N, where N is the number of lineage
+                            members with that skill spark.
+                        </p>
+                    )}
                 </div>
             </div>
 
-            {veterans.length < 2 ? (
+            {veterans.length === 0 ? (
                 <Alert variant="info" className="mb-0">
-                    Load at least two owned veterans in the <strong>My veterans</strong> tab to search for a
-                    parent pair.
+                    Load at least one owned veteran in the <strong>My veterans</strong> tab to build combos.
                 </Alert>
             ) : (
                 <>
                     <div className="best-combo-controls">
                         <div className="best-combo-field">
-                            <label className="best-combo-label" htmlFor="best-combo-target">Target Uma</label>
+                            <label className="best-combo-label" htmlFor="best-combo-target">
+                                {isGpMode ? "Target GP Uma" : "Target Uma"}
+                            </label>
                             <Form.Select
                                 id="best-combo-target"
                                 size="sm"
                                 value={targetCharaId ?? ""}
                                 onChange={event => setTargetCharaId(event.target.value ? Number(event.target.value) : null)}
                             >
-                                <option value="">Select target Uma...</option>
+                                <option value="">Select target {isGpMode ? "GP " : ""}Uma...</option>
                                 {charaOptions.map(chara => (
                                     <option key={chara.id} value={chara.id}>{chara.name}</option>
                                 ))}
@@ -515,41 +755,39 @@ const BestComboPanel = ({
                             )}
                         </div>
 
-                        <div className="best-combo-field">
-                            <span className="best-combo-label">Aptitudes to aim for S</span>
-                            <div className="best-combo-chip-groups">
-                                {APTITUDE_GROUPS.map(group => (
-                                    <div className="best-combo-chip-group" key={group}>
-                                        <span className="best-combo-chip-group-label">
-                                            {APTITUDE_GROUP_LABELS[group]}
-                                        </span>
-                                        <div className="best-combo-chip-row">
-                                            {APTITUDE_OPTIONS.filter(option => option.group === group).map(option => (
-                                                <button
-                                                    key={option.key}
-                                                    type="button"
-                                                    className={`best-combo-chip${sAptitudeKeys.includes(option.key) ? " active" : ""}`}
-                                                    title={`${option.label} aptitude`}
-                                                    onClick={() => toggleSAptitude(option.key)}
-                                                >
-                                                    {option.shortLabel}
-                                                </button>
-                                            ))}
+                        {!isGpMode && (
+                            <div className="best-combo-field">
+                                <span className="best-combo-label">Aptitudes to aim for S</span>
+                                <div className="best-combo-chip-groups">
+                                    {APTITUDE_GROUPS.map(group => (
+                                        <div className="best-combo-chip-group" key={group}>
+                                            <span className="best-combo-chip-group-label">
+                                                {APTITUDE_GROUP_LABELS[group]}
+                                            </span>
+                                            <div className="best-combo-chip-row">
+                                                {APTITUDE_OPTIONS.filter(option => option.group === group).map(option => (
+                                                    <button
+                                                        key={option.key}
+                                                        type="button"
+                                                        className={`best-combo-chip${sAptitudeKeys.includes(option.key) ? " active" : ""}`}
+                                                        title={`${option.label} aptitude`}
+                                                        onClick={() => toggleSAptitude(option.key)}
+                                                    >
+                                                        {option.shortLabel}
+                                                    </button>
+                                                ))}
+                                            </div>
                                         </div>
-                                    </div>
-                                ))}
+                                    ))}
+                                </div>
                             </div>
-                        </div>
+                        )}
                     </div>
 
                     <div className="best-combo-parent-requirements">
                         <div className="best-combo-parent-requirements-header">
                             <div>
                                 <span className="best-combo-label">Parent requirements</span>
-                                <p className="best-combo-hint">
-                                    Optional. Lock one or both sides to a specific Uma. If only one side is
-                                    set, any pair containing that Uma is considered and shown on that side.
-                                </p>
                             </div>
                             <Button
                                 size="sm"
@@ -605,13 +843,108 @@ const BestComboPanel = ({
                         </div>
                     </div>
 
+                    <div className="best-combo-moe-section">
+                        <div className="best-combo-moe-header">
+                            <Form.Check
+                                type="switch"
+                                id="best-combo-include-moe"
+                                label="Include uma.moe parents"
+                                checked={includeMoeParents}
+                                onChange={event => setIncludeMoeParents(event.target.checked)}
+                            />
+                            <p className="best-combo-hint">
+                                When enabled, one side of each combo can come from uma.moe. Search uses your current custom scoring and the filters
+                                set in the uma.moe search tab.
+                            </p>
+                        </div>
+                        {includeMoeParents && (
+                            <div className="best-combo-moe-actions">
+                                <Button
+                                    size="sm"
+                                    variant="outline-info"
+                                    onClick={onSearchMoe}
+                                    disabled={moeSearching || (moeSearchIsCurrent && !moeCanLoadMore)}
+                                >
+                                    {moeSearching
+                                        ? (moeSearchIsCurrent ? "Loading..." : "Searching uma.moe...")
+                                        : moeSearchIsCurrent
+                                            ? (moeCanLoadMore ? "Load 100 more" : "All results loaded")
+                                            : "Search uma.moe (100)"}
+                                </Button>
+                                <span className="best-combo-hint">
+                                    {moeVeterans.length > 0
+                                        ? `${moeVeterans.length} uma.moe candidates loaded.`
+                                        : "No uma.moe candidates loaded yet."}
+                                </span>
+                                {moeVeterans.length > 0 && !moeSearchIsCurrent && (
+                                    <span className="best-combo-moe-stale">
+                                        Search settings changed — run a new search to apply them.
+                                    </span>
+                                )}
+                            </div>
+                        )}
+                        {includeMoeParents && moeError && (
+                            <Alert variant="danger" className="best-combo-moe-error">
+                                {moeError}
+                            </Alert>
+                        )}
+                        {includeMoeParents && (
+                            <div className="best-combo-moe-settings">
+                                <div className="best-combo-moe-settings-block">
+                                    <span className="best-combo-label">Parent characters</span>
+                                    <ParentCharacterFilter
+                                        veterans={veterans}
+                                        selected={parentCharaIds}
+                                        onChange={onParentCharaIdsChange}
+                                        includeAllCharacters
+                                    />
+                                </div>
+                                <div className="best-combo-moe-settings-block">
+                                    <span className="best-combo-label">Spark filters</span>
+                                    <p className="best-combo-hint">
+                                        These are the same filters used by the uma.moe search tab.
+                                    </p>
+                                    <div className="vet-filter-buttons">
+                                        <FilterToolbar
+                                            config={config}
+                                            visibilityState={{
+                                                blues: openMoeFilter === "blues",
+                                                aptitude: openMoeFilter === "aptitude",
+                                                uniques: openMoeFilter === "uniques",
+                                                races: openMoeFilter === "races",
+                                                skills: openMoeFilter === "skills",
+                                            }}
+                                            onToggle={key => setOpenMoeFilter(key)}
+                                            onAddFilter={onAddFilter}
+                                            getAvailableStats={getAvailableFilterStats}
+                                        />
+                                    </div>
+                                    <ActiveFiltersList
+                                        filters={{
+                                            bluesFilters: moeFilters.blues,
+                                            aptitudeFilters: moeFilters.aptitude,
+                                            uniquesFilters: moeFilters.uniques,
+                                            racesFilters: moeFilters.races,
+                                            skillsFilters: moeFilters.skills,
+                                        }}
+                                        config={config}
+                                        onRemove={onRemoveFilter}
+                                        onClearAll={onClearFilters}
+                                    />
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
                     <div className="best-combo-scoring-row">
                         <div>
-                            <span className="best-combo-label">Inheritance score</span>
+                            <span className="best-combo-label">
+                                {isGpMode ? "GP skill score" : "Inheritance score"}
+                            </span>
                             <p className="best-combo-hint">
-                                Blends aptitude S chance, named-spark chance, and expected stat gain.
-                                Stat gains use the guide averages: blue initial 5/12/21, blue mid-run
-                                1–10/1–16/1–28, race 3/6/9, scenario 2×10/20/30.
+                                {isGpMode
+                                    ? "Weights each desired skill spark by custom value, inherit chance, and spawn chance, with a bonus when the selected parents themselves own it. Parent-owned pink sparks also add their custom pink score."
+                                    : "Blends aptitude S chance, named-spark chance, and expected stat gain. Custom blue stat multipliers are applied per stat."}
                             </p>
                         </div>
                         <CustomScoringPanel
@@ -623,42 +956,76 @@ const BestComboPanel = ({
                     </div>
 
                     <div className="best-combo-score-weights">
+                        {!isGpMode && (
+                            <label className="best-combo-weight">
+                                <span>Aptitude S chance ×</span>
+                                <Form.Control
+                                    size="sm"
+                                    type="number"
+                                    min={0}
+                                    step="0.1"
+                                    value={scoreWeights.sTarget}
+                                    title="Points per 1% chance for each selected aptitude S target."
+                                    onChange={event => updateScoreWeight("sTarget", event.target.value)}
+                                />
+                            </label>
+                        )}
                         <label className="best-combo-weight">
-                            <span>Aptitude S chance ×</span>
-                            <Form.Control
-                                size="sm"
-                                type="number"
-                                min={0}
-                                step="0.1"
-                                value={scoreWeights.sTarget}
-                                title="Points per 1% chance for each selected aptitude S target."
-                                onChange={event => updateScoreWeight("sTarget", event.target.value)}
-                            />
-                        </label>
-                        <label className="best-combo-weight">
-                            <span>Spark value ×</span>
+                            <span>{isGpMode ? "Skill spark value ×" : "Spark value ×"}</span>
                             <Form.Control
                                 size="sm"
                                 type="number"
                                 min={0}
                                 step="0.1"
                                 value={scoreWeights.spark}
-                                title="Multiplier on named-spark custom values × chance to inherit."
+                                title={isGpMode
+                                    ? "Multiplier on custom skill value × inherit chance × spawn chance."
+                                    : "Multiplier on named-spark custom values × chance to inherit."}
                                 onChange={event => updateScoreWeight("spark", event.target.value)}
                             />
                         </label>
-                        <label className="best-combo-weight">
-                            <span>Stat value ×</span>
-                            <Form.Control
-                                size="sm"
-                                type="number"
-                                min={0}
-                                step="0.1"
-                                value={scoreWeights.stat}
-                                title="Multiplier on expected stat gain from blue, race, and scenario sparks."
-                                onChange={event => updateScoreWeight("stat", event.target.value)}
-                            />
-                        </label>
+                        {isGpMode && (
+                            <>
+                                <label className="best-combo-weight">
+                                    <span>Parent skill ×</span>
+                                    <Form.Control
+                                        size="sm"
+                                        type="number"
+                                        min={0}
+                                        step="0.1"
+                                        value={scoreWeights.parentSkill}
+                                        title="Skill contribution multiplier becomes 1 + this × number of selected parents owning the skill."
+                                        onChange={event => updateScoreWeight("parentSkill", event.target.value)}
+                                    />
+                                </label>
+                                <label className="best-combo-weight">
+                                    <span>Parent pink ×</span>
+                                    <Form.Control
+                                        size="sm"
+                                        type="number"
+                                        min={0}
+                                        step="0.1"
+                                        value={scoreWeights.parentPink}
+                                        title="Multiplier on the custom score of pink sparks owned by the selected parents themselves."
+                                        onChange={event => updateScoreWeight("parentPink", event.target.value)}
+                                    />
+                                </label>
+                            </>
+                        )}
+                        {!isGpMode && (
+                            <label className="best-combo-weight">
+                                <span>Stat value ×</span>
+                                <Form.Control
+                                    size="sm"
+                                    type="number"
+                                    min={0}
+                                    step="0.1"
+                                    value={scoreWeights.stat}
+                                    title="Multiplier on expected stat gain after custom blue stat multipliers."
+                                    onChange={event => updateScoreWeight("stat", event.target.value)}
+                                />
+                            </label>
+                        )}
                         <Button
                             size="sm"
                             variant="outline-secondary"
@@ -668,14 +1035,26 @@ const BestComboPanel = ({
                         </Button>
                     </div>
 
+                    {!isGpMode && (
                     <div className="best-combo-conditions">
                         <div className="best-combo-conditions-header">
                             <div>
                                 <span className="best-combo-label">Conditions</span>
-                                <p className="best-combo-hint">
-                                    Optional. “Stars” counts total red-spark stars; “sparks” counts the number of
-                                    red-spark copies.
-                                </p>
+                                {starConditionSummaries.length > 0 && (
+                                    <div className="best-combo-condition-grades">
+                                        {starConditionSummaries.map(summary => (
+                                            <span className="best-combo-condition-grade" key={summary.aptitudeKey}>
+                                                <span style={{ color: summary.option.color }}>
+                                                    {summary.option.shortLabel}
+                                                </span>
+                                                {` ${summary.baseGrade ?? "?"} → ${summary.startingGrade}`}
+                                                <span className="best-combo-condition-grade-min">
+                                                    {summary.stars}★ min
+                                                </span>
+                                            </span>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
                             <Button size="sm" variant="outline-secondary" onClick={addCondition}>
                                 Add condition
@@ -683,7 +1062,7 @@ const BestComboPanel = ({
                         </div>
 
                         {conditions.length === 0 ? (
-                            <p className="best-combo-empty">No conditions — every owned pair will be ranked.</p>
+                            <p className="best-combo-empty">No conditions.</p>
                         ) : (
                             <div className="best-combo-condition-list">
                                 {conditions.map(condition => (
@@ -720,6 +1099,9 @@ const BestComboPanel = ({
                                             type="number"
                                             min={0}
                                             value={condition.min}
+                                            title={condition.metric === "stars"
+                                                ? `Minimum total stars. At this minimum the target starts at ${getStartingAptitudeGrade(getTargetBaseAptitudeGrade(targetCharaId, condition.aptitudeKey), condition.min) ?? "?"}.`
+                                                : "Minimum spark count."}
                                             onChange={event => updateCondition(condition.id, {
                                                 min: Math.max(0, Number(event.target.value) || 0),
                                             })}
@@ -737,58 +1119,79 @@ const BestComboPanel = ({
                             </div>
                         )}
                     </div>
+                    )}
 
-                    <p className="best-combo-note">
-                        Aptitude S chance counts at least one matching red-spark proc across the two mid-run inheritance
-                        turns (base 1/3/5% × individual affinity). It assumes the target aptitude is A, so a
-                        single proc reaches S.
-                    </p>
+                    {isGpMode && (
+                        <p className="best-combo-note">
+                            GP score = Σ custom skill value × inherit chance × spawn chance. Spawn chance uses
+                            the number of the six lineage members carrying that skill spark and assumes the GP
+                            learns the skill during its run. Target innate/awakening skills use 100% inherit
+                            chance.
+                        </p>
+                    )}
 
                     {targetCharaId === null && (
                         <Alert variant="info" className="best-combo-state">
-                            Select a target Uma to calculate affinity and spark proc odds.
+                            {isGpMode
+                                ? "Select a target GP Uma to calculate skill spark inherit and spawn odds."
+                                : "Select a target Uma to calculate affinity and spark proc odds."}
                         </Alert>
                     )}
 
-                    {targetCharaId !== null && orderedSAptitudes.length === 0 && (
+                    {!isGpMode && targetCharaId !== null && orderedSAptitudes.length === 0 && (
                         <Alert variant="info" className="best-combo-state">
                             Select at least one aptitude to aim for S.
                         </Alert>
                     )}
 
+                    {targetCharaId !== null
+                        && orderedSAptitudes.length > 0
+                        && evaluationVeterans.length < 2 && (
+                            <Alert variant="info" className="best-combo-state">
+                                Add another owned veteran, or enable <strong>Include uma.moe parents</strong> and
+                                search uma.moe, to build combos.
+                            </Alert>
+                        )}
+
                     {evaluation && (
                         <div className="best-combo-results">
                             <div className="best-combo-results-header">
                                 <div>
-                                    <h3 className="best-combo-results-title">Best combos</h3>
+                                    <h3 className="best-combo-results-title">
+                                        {isGpMode ? "Best GP combos" : "Best combos"}
+                                    </h3>
                                     <p className="best-combo-results-count">
                                         {evaluation.matchedCount.toLocaleString()} matching pairs out of{" "}
                                         {evaluation.evaluatedCount.toLocaleString()} evaluated.
                                     </p>
                                 </div>
-                                <div className="best-combo-results-actions">
-                                    <span className="best-combo-sort-label">Rank by</span>
-                                    <ButtonGroup size="sm">
-                                        <Button
-                                            variant={rankMode === "score" ? "secondary" : "outline-secondary"}
-                                            title="Blend of S-target chance, named-spark chance, and expected stat gain."
-                                            onClick={() => setRankMode("score")}
-                                        >
-                                            Inheritance score
-                                        </Button>
-                                        <Button
-                                            variant={rankMode === "sChance" ? "secondary" : "outline-secondary"}
-                                            onClick={() => setRankMode("sChance")}
-                                        >
-                                            Aptitude S chance
-                                        </Button>
-                                    </ButtonGroup>
-                                </div>
+                                {isGpMode ? (
+                                    <span className="best-combo-sort-label">Sorted by GP skill score</span>
+                                ) : (
+                                    <div className="best-combo-results-actions">
+                                        <span className="best-combo-sort-label">Rank by</span>
+                                        <ButtonGroup size="sm">
+                                            <Button
+                                                variant={rankMode === "score" ? "secondary" : "outline-secondary"}
+                                                title="Blend of S-target chance, named-spark chance, and expected stat gain."
+                                                onClick={() => setRankMode("score")}
+                                            >
+                                                Inheritance score
+                                            </Button>
+                                            <Button
+                                                variant={rankMode === "sChance" ? "secondary" : "outline-secondary"}
+                                                onClick={() => setRankMode("sChance")}
+                                            >
+                                                Aptitude S chance
+                                            </Button>
+                                        </ButtonGroup>
+                                    </div>
+                                )}
                             </div>
 
                             {orientedResults.length === 0 ? (
                                 <Alert variant="warning" className="mb-0">
-                                    No owned parent pair meets these conditions. Try lowering the minimums.
+                                    No owned parent pair meets these settings.
                                 </Alert>
                             ) : (
                                 <>
@@ -803,117 +1206,184 @@ const BestComboPanel = ({
 
                                                 <div className="best-combo-result-main">
                                                     <div className="best-combo-parents">
-                                                        {renderParent(result.parent1, "p1")}
+                                                        {renderParent(result.parent1, "p1", firstBreakdown)}
                                                         <span className="best-combo-plus">+</span>
-                                                        {renderParent(result.parent2, "p2")}
+                                                        {renderParent(result.parent2, "p2", secondBreakdown)}
                                                     </div>
                                                     <div className="best-combo-result-meta">
                                                         <span className="best-combo-affinity">
                                                             Affinity +{result.affinity}
                                                         </span>
-                                                        {orderedSAptitudes.map(option => {
-                                                            const minStars = conditionMinimums.get(option.key)?.stars;
-                                                            return (
-                                                                <span className="best-combo-total" key={option.key}>
-                                                                    {option.shortLabel} {result.totals.get(option.key)?.stars ?? 0}★
-                                                                    {minStars !== undefined && (
-                                                                        <span className="best-combo-condition-inline">
-                                                                            {" "}· min {minStars}★
+                                                        {isGpMode ? (
+                                                            <span className="best-combo-total">
+                                                                {result.gpSkills.length} desired skill sparks
+                                                            </span>
+                                                        ) : (
+                                                            <>
+                                                                {orderedSAptitudes.map(option => {
+                                                                    const minStars = conditionMinimums.get(option.key)?.stars;
+                                                                    const stars = result.totals.get(option.key)?.stars ?? 0;
+                                                                    const startingGrade = getStartingAptitudeGrade(
+                                                                        getTargetBaseAptitudeGrade(targetCharaId, option.key),
+                                                                        stars,
+                                                                    );
+                                                                    return (
+                                                                        <span className="best-combo-total" key={option.key}>
+                                                                            {option.shortLabel} {stars}★
+                                                                            {startingGrade ? ` → ${startingGrade}` : ""}
+                                                                            {minStars !== undefined && (
+                                                                                <span className="best-combo-condition-inline">
+                                                                                    , min {minStars}★
+                                                                                </span>
+                                                                            )}
                                                                         </span>
-                                                                    )}
-                                                                </span>
-                                                            );
-                                                        })}
-                                                        {conditions.map((condition, conditionIndex) => {
-                                                            if (condition.metric === "stars" && sAptitudeKeys.includes(condition.aptitudeKey)) {
-                                                                return null;
-                                                            }
+                                                                    );
+                                                                })}
+                                                                {conditions.map((condition, conditionIndex) => {
+                                                                    if (condition.metric === "stars" && sAptitudeKeys.includes(condition.aptitudeKey)) {
+                                                                        return null;
+                                                                    }
 
-                                                            const option = getAptitudeOption(condition.aptitudeKey);
-                                                            const value = result.conditionValues[conditionIndex] ?? 0;
-                                                            return (
-                                                                <span
-                                                                    className="best-combo-condition-met"
-                                                                    key={condition.id}
-                                                                    title={`${option?.label ?? "Aptitude"} minimum ${condition.min}`}
-                                                                >
-                                                                    {option?.shortLabel ?? "Aptitude"}: {value}
-                                                                    {condition.metric === "stars" ? "★" : " sparks"}
-                                                                </span>
-                                                            );
-                                                        })}
+                                                                    const option = getAptitudeOption(condition.aptitudeKey);
+                                                                    const value = result.conditionValues[conditionIndex] ?? 0;
+                                                                    const startingGrade = condition.metric === "stars"
+                                                                        ? getStartingAptitudeGrade(
+                                                                            getTargetBaseAptitudeGrade(targetCharaId, condition.aptitudeKey),
+                                                                            value,
+                                                                        )
+                                                                        : null;
+
+                                                                    return (
+                                                                        <span
+                                                                            className="best-combo-condition-met"
+                                                                            key={condition.id}
+                                                                            title={`${option?.label ?? "Aptitude"} minimum ${condition.min}${startingGrade ? `; target starts at ${startingGrade}` : ""}`}
+                                                                        >
+                                                                            {option?.shortLabel ?? "Aptitude"}: {value}
+                                                                            {condition.metric === "stars"
+                                                                                ? `★${startingGrade ? ` → ${startingGrade}` : ""}`
+                                                                                : " sparks"}
+                                                                        </span>
+                                                                    );
+                                                                })}
+                                                            </>
+                                                        )}
                                                     </div>
                                                 </div>
 
                                                 <div className="best-combo-chances">
-                                                    {orderedSAptitudes.map(option => (
-                                                        <div className="best-combo-chance-row" key={option.key}>
-                                                            <span
-                                                                className="best-combo-chance-label"
-                                                                style={{ color: option.color }}
+                                                    {isGpMode ? (
+                                                        <>
+                                                            <div
+                                                                className="best-combo-chance-row best-combo-chance-row--score"
+                                                                title="Σ skill value × inherit chance × spawn chance × parent bonus + parent pink score"
                                                             >
-                                                                {option.label}
-                                                            </span>
-                                                            <strong className="best-combo-chance-value">
-                                                                {(result.sChances.get(option.key) ?? 0).toFixed(2)}%
-                                                            </strong>
-                                                        </div>
-                                                    ))}
-                                                    {orderedSAptitudes.length > 1 && (
-                                                        <div className="best-combo-chance-row best-combo-chance-row--combined">
-                                                            <span className="best-combo-chance-label">All selected</span>
-                                                            <strong className="best-combo-chance-value">
-                                                                {result.combinedSChance.toFixed(2)}%
-                                                            </strong>
-                                                        </div>
+                                                                <span className="best-combo-chance-label">GP score</span>
+                                                                <strong className="best-combo-chance-value">
+                                                                    {result.inheritanceScore.toFixed(1)}
+                                                                </strong>
+                                                            </div>
+                                                            <div className="best-combo-score-parts">
+                                                                <span>Skills {result.gpSkillScore.toFixed(1)}</span>
+                                                                <span>Pinks {result.gpPinkScore.toFixed(1)}</span>
+                                                            </div>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            {orderedSAptitudes.map(option => {
+                                                                const detail = result.sChanceDetails.get(option.key);
+
+                                                                return (
+                                                                    <div className="best-combo-chance-group" key={option.key}>
+                                                                        <div className="best-combo-chance-row">
+                                                                            <span
+                                                                                className="best-combo-chance-label"
+                                                                                style={{ color: option.color }}
+                                                                                title={detail
+                                                                                    ? `${detail.stars}★ total. Needs at least ${detail.procsNeeded} proc${detail.procsNeeded === 1 ? "" : "s"} to reach S.`
+                                                                                    : undefined}
+                                                                            >
+                                                                                {option.label}
+                                                                                {detail && (
+                                                                                    <span className="best-combo-chance-detail">
+                                                                                        {detail.stars}★
+                                                                                    </span>
+                                                                                )}
+                                                                            </span>
+                                                                            <strong className="best-combo-chance-value">
+                                                                                {(detail?.chance ?? 0).toFixed(2)}%
+                                                                            </strong>
+                                                                        </div>
+                                                                        {detail && detail.procsNeeded > 1 && (
+                                                                            <div className="best-combo-proc-breakdown">
+                                                                                {detail.procChances.map((chance, index) => (
+                                                                                    <span className="best-combo-proc-chance" key={index}>
+                                                                                        ≥{index + 1} proc{index === 0 ? "" : "s"}: {chance.toFixed(2)}%
+                                                                                    </span>
+                                                                                ))}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                            {orderedSAptitudes.length > 1 && (
+                                                                <div className="best-combo-chance-row best-combo-chance-row--combined">
+                                                                    <span className="best-combo-chance-label">All selected</span>
+                                                                    <strong className="best-combo-chance-value">
+                                                                        {result.combinedSChance.toFixed(2)}%
+                                                                    </strong>
+                                                                </div>
+                                                            )}
+                                                            <div
+                                                                className="best-combo-chance-row best-combo-chance-row--score"
+                                                                title={`Aptitude S ${result.scoreBreakdown.sTargets.toFixed(1)} + sparks ${result.scoreBreakdown.sparks.toFixed(1)} + stats ${result.scoreBreakdown.stats.toFixed(1)}`}
+                                                            >
+                                                                <span className="best-combo-chance-label">Inherit score</span>
+                                                                <strong className="best-combo-chance-value">
+                                                                    {result.inheritanceScore.toFixed(1)}
+                                                                </strong>
+                                                            </div>
+                                                            <div className="best-combo-score-parts">
+                                                                <span>Aptitude S {result.scoreBreakdown.sTargets.toFixed(1)}</span>
+                                                                <span>Sparks {result.scoreBreakdown.sparks.toFixed(1)}</span>
+                                                                <span>Stats {result.scoreBreakdown.stats.toFixed(1)}</span>
+                                                            </div>
+                                                        </>
                                                     )}
-                                                    <div
-                                                        className="best-combo-chance-row best-combo-chance-row--score"
-                                                        title={`Aptitude S ${result.scoreBreakdown.sTargets.toFixed(1)} + sparks ${result.scoreBreakdown.sparks.toFixed(1)} + stats ${result.scoreBreakdown.stats.toFixed(1)}`}
-                                                    >
-                                                        <span className="best-combo-chance-label">Inherit score</span>
-                                                        <strong className="best-combo-chance-value">
-                                                            {result.inheritanceScore.toFixed(1)}
-                                                        </strong>
-                                                    </div>
-                                                    <div className="best-combo-score-parts">
-                                                        <span>Aptitude S {result.scoreBreakdown.sTargets.toFixed(1)}</span>
-                                                        <span>Sparks {result.scoreBreakdown.sparks.toFixed(1)}</span>
-                                                        <span>Stats {result.scoreBreakdown.stats.toFixed(1)}</span>
-                                                    </div>
                                                 </div>
 
-                                                <div className="best-combo-combined">
-                                                    <div className="best-combo-stat-gains">
-                                                        <span className="best-combo-stat-gains-title">Expected stats</span>
-                                                        {STAT_KEYS.map(stat => (
-                                                            <span
-                                                                className="best-combo-stat-chip"
-                                                                key={stat}
-                                                                title={formatStatBreakdown(result.scoreBreakdown.statSources[stat])}
-                                                            >
-                                                                <span className="best-combo-stat-name">
-                                                                    {STAT_LABELS[stat]}
-                                                                </span>
-                                                                <strong className="best-combo-stat-value">
-                                                                    {result.scoreBreakdown.statGains[stat].toFixed(1)}
-                                                                </strong>
-                                                            </span>
-                                                        ))}
-                                                        <span className="best-combo-stat-note">
-                                                            Unique sparks: hints / stat caps only
-                                                        </span>
-                                                    </div>
-                                                    <CombinedSparkDetails
-                                                        breakdowns={[firstBreakdown, secondBreakdown]}
+                                                {isGpMode ? (
+                                                    <GpSkillDetails
+                                                        skills={result.gpSkills}
                                                         config={config}
                                                     />
-                                                </div>
-
-                                                <div className="best-combo-breakdown">
-                                                    {renderParentBreakdown(result.parent1, firstBreakdown, "P1")}
-                                                    {renderParentBreakdown(result.parent2, secondBreakdown, "P2")}
-                                                </div>
+                                                ) : (
+                                                    <>
+                                                        <div className="best-combo-combined">
+                                                            <div className="best-combo-stat-gains">
+                                                                <span className="best-combo-stat-gains-title">Expected stats</span>
+                                                                {STAT_KEYS.map(stat => (
+                                                                    <span
+                                                                        className="best-combo-stat-chip"
+                                                                        key={stat}
+                                                                        title={formatStatBreakdown(result.scoreBreakdown.statSources[stat])}
+                                                                    >
+                                                                        <span className="best-combo-stat-name">
+                                                                            {STAT_LABELS[stat]}
+                                                                        </span>
+                                                                        <strong className="best-combo-stat-value">
+                                                                            {result.scoreBreakdown.statGains[stat].toFixed(1)}
+                                                                        </strong>
+                                                                    </span>
+                                                                ))}
+                                                            </div>
+                                                            <CombinedSparkDetails
+                                                                breakdowns={[firstBreakdown, secondBreakdown]}
+                                                                config={config}
+                                                            />
+                                                        </div>
+                                                    </>
+                                                )}
                                             </div>
                                             );
                                         })}

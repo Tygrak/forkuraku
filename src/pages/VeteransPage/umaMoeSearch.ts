@@ -1,4 +1,4 @@
-import { UMA_MOE_API_BASE, UMA_MOE_API_KEY } from "../../config/umaMoe";
+import { UMA_MOE_API_BASE } from "../../config/umaMoe";
 import UMDatabaseWrapper from "../../data/UMDatabaseWrapper";
 import { getFactorCategory } from "../../data/VeteransHelper";
 import { PINK_PRESETS } from "./customScoring";
@@ -304,15 +304,17 @@ export const searchUmaMoeVeterans = async (
     parentCharaIds: number[],
     filters: UmaMoeSearchFilters,
     page = 0,
+    apiKey = "",
 ): Promise<UmaMoeSearchResult> => {
-    if (!UMA_MOE_API_KEY) {
-        throw new Error("Missing uma.moe API key. Add VITE_UMA_MOE_API_KEY to .env.local and restart the dev server.");
+    const trimmedApiKey = apiKey.trim();
+    if (!trimmedApiKey) {
+        throw new Error("Missing uma.moe API key. Add it in the Settings tab.");
     }
 
     const params = buildUmaMoeSearchParams(config, parentCharaIds, filters, page);
     const response = await fetch(`${UMA_MOE_API_BASE}/api/v3/search?${params.toString()}`, {
         headers: {
-            "X-API-Key": UMA_MOE_API_KEY,
+            "X-API-Key": trimmedApiKey,
         },
     });
 

@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./VeteransPage/VeteransPage.css";
 import { Alert, Button, ButtonGroup, Container, Form, InputGroup } from "react-bootstrap";
-import { useAuth } from "../auth/AuthContext";
-import type { AccountHorseActVerificationStatusResponse, AccountVeteranSnapshotSummary } from "../auth/authShared";
 import { Veteran, BaseFilter, BluesFilter, AptitudeFilter, UniquesFilter, RacesFilter, SkillsFilter, SortOption, SortDirection, SparkDisplayMode, getFilterStats, getFilterStarOptions } from "./VeteransPage/types";
 import { SelectorType } from "./VeteransPage/InlineFilterSelector";
 import VeteransSorter from "./VeteransPage/VeteransSorter";
 import CustomScoringPanel from "./VeteransPage/CustomScoringPanel";
 import ParentCharacterFilter from "./VeteransPage/ParentCharacterFilter";
+import UmaMoeApiKeyInput from "./VeteransPage/UmaMoeApiKeyInput";
 
 import VeteranCard from "./VeteransPage/VeteranCard";
 import BestComboPanel from "./VeteransPage/BestComboPanel";
@@ -25,14 +24,8 @@ import {
     loadCustomScoringConfig,
     saveCustomScoringConfig,
 } from "./VeteransPage/customScoring";
-import {
-    getKvKeyFromUrl,
-    fetchVeteransFromWorker,
-    fetchLoanedChara,
-    fetchAccountVeterans,
-    shouldLoadAccountVeterans,
-} from "./VeteransPage/UrlSharing";
 import { searchUmaMoeVeterans, UmaMoeSearchFilters, UmaMoeSearchResult } from "./VeteransPage/umaMoeSearch";
+import { loadUmaMoeApiKey, saveUmaMoeApiKey } from "../config/umaMoe";
 
 const FILTER_CONFIG = {
     blues: { categoryId: 1, stateKey: "bluesFilters" as const, label: "Blues", color: "rgb(55, 183, 244)", selectorType: "blues" as SelectorType },
@@ -43,33 +36,29 @@ const FILTER_CONFIG = {
 };
 
 export default function VeteransPage() {
-    const { authenticated, user } = useAuth();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const vetListRef = useRef<HTMLDivElement>(null);
 
     const [ownedVeterans, setOwnedVeterans] = useState<Veteran[]>([]);
-    const [sourceTab, setSourceTab] = useState<"owned" | "moe" | "best">("owned");
+    const [sourceTab, setSourceTab] = useState<"owned" | "moe" | "best" | "bestGp" | "settings">("owned");
     const [moeVeterans, setMoeVeterans] = useState<Veteran[]>([]);
     const [moeSearching, setMoeSearching] = useState(false);
     const [moeError, setMoeError] = useState("");
     const [moeMeta, setMoeMeta] = useState<UmaMoeSearchResult | null>(null);
     const [moeSearchParamsKey, setMoeSearchParamsKey] = useState<string | null>(null);
+    const [umaMoeApiKey, setUmaMoeApiKey] = useState(loadUmaMoeApiKey);
     const veterans = sourceTab === "moe" ? moeVeterans : ownedVeterans;
     const [error, setError] = useState("");
-    const [accountVeteranMeta, setAccountVeteranMeta] = useState<{
-        viewerId: number;
-        veteranCount: number;
-        updatedAt: string;
-    } | null>(null);
-    const [accountVeteranSnapshot, setAccountVeteranSnapshot] = useState<AccountVeteranSnapshotSummary | null>(null);
 
     const [affinityParent1, setAffinityParent1] = useState<Veteran | null>(null);
     const [affinityParent2, setAffinityParent2] = useState<Veteran | null>(null);
-    const [parent2IsBorrowed, setParent2IsBorrowed] = useState(false);
-    const [borrowLoading, setBorrowLoading] = useState(false);
     const [showPlanner, setShowPlanner] = useState(false);
     const [showSparkProc, setShowSparkProc] = useState(false);
     const [activeAffinitySlot, setActiveAffinitySlot] = useState<"p1" | "p2" | null>(null);
+
+    useEffect(() => {
+        saveUmaMoeApiKey(umaMoeApiKey);
+    }, [umaMoeApiKey]);
 
     useEffect(() => {
         if (activeAffinitySlot && vetListRef.current) {
@@ -87,7 +76,6 @@ export default function VeteransPage() {
             setAffinityParent1(veteran);
         } else {
             setAffinityParent2(veteran);
-            setParent2IsBorrowed(false);
         }
         setActiveAffinitySlot(null);
         setActiveSort("affinity");
@@ -96,21 +84,8 @@ export default function VeteransPage() {
     const handleAffinityReset = () => {
         setAffinityParent1(null);
         setAffinityParent2(null);
-        setParent2IsBorrowed(false);
         setActiveAffinitySlot(null);
         setAffinityCharaId(null);
-    };
-
-    const handleBorrowLookup = async (viewerId: string) => {
-        setBorrowLoading(true);
-        try {
-            const vet = await fetchLoanedChara(viewerId);
-            setAffinityParent2(vet);
-            setParent2IsBorrowed(true);
-            setActiveSort("affinity");
-        } finally {
-            setBorrowLoading(false);
-        }
     };
 
     const [bluesFilters, setBluesFilters] = useState<BluesFilter[]>([]);
@@ -197,54 +172,6 @@ export default function VeteransPage() {
         setActiveSort("custom");
     };
 
-    useEffect(() => {
-        const kvKey = getKvKeyFromUrl();
-        if (kvKey) {
-            fetchVeteransFromWorker(kvKey)
-                .then(v => {
-                    setOwnedVeterans(v);
-                    setAccountVeteranMeta(null);
-                })
-                .catch(err => setError(`Failed to load shared roster: ${err.message}`));
-            return;
-        }
-
-        if (shouldLoadAccountVeterans()) {
-            fetchAccountVeterans()
-                .then(({ viewerId, veteranCount, updatedAt, veterans: loadedVeterans }) => {
-                    setOwnedVeterans(loadedVeterans);
-                    setAccountVeteranMeta({ viewerId, veteranCount, updatedAt });
-                    setError("");
-                })
-                .catch(err => setError(`Failed to load your veteran roster: ${err.message}`));
-        }
-    }, []);
-
-    useEffect(() => {
-        if (!authenticated || !user) {
-            setAccountVeteranSnapshot(null);
-            return;
-        }
-
-        let cancelled = false;
-        fetch("/api/account/horseact-verification/status", {
-            credentials: "same-origin",
-        })
-            .then((response) => response.ok ? response.json() as Promise<AccountHorseActVerificationStatusResponse> : null)
-            .then((payload) => {
-                if (!cancelled) {
-                    setAccountVeteranSnapshot(payload?.linkedGameAccount ? payload.veteranSnapshot : null);
-                }
-            })
-            .catch(() => {
-                if (!cancelled) setAccountVeteranSnapshot(null);
-            });
-
-        return () => {
-            cancelled = true;
-        };
-    }, [authenticated, user]);
-
     const handleFileChange: React.ChangeEventHandler<HTMLInputElement> = e => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -269,13 +196,13 @@ export default function VeteransPage() {
         e.target.value = "";
     };
 
-    const runUmaMoeSearch = async (page: number, append: boolean) => {
+    const runUmaMoeSearch = async (page: number, append: boolean, switchTab = true) => {
         setMoeSearching(true);
         setMoeError("");
         const signature = moeSearchSignature;
 
         try {
-            const result = await searchUmaMoeVeterans(customScoringConfig, parentCharaIds, umaMoeSearchFilters, page);
+            const result = await searchUmaMoeVeterans(customScoringConfig, parentCharaIds, umaMoeSearchFilters, page, umaMoeApiKey);
             setMoeVeterans(current => {
                 if (!append) return result.veterans;
 
@@ -287,7 +214,7 @@ export default function VeteransPage() {
             });
             setMoeMeta(result);
             setMoeSearchParamsKey(signature);
-            setSourceTab("moe");
+            if (switchTab) setSourceTab("moe");
             setActiveSort("custom");
         } catch (err: any) {
             setMoeError(err?.message ?? String(err));
@@ -304,6 +231,16 @@ export default function VeteransPage() {
 
         if (!moeCanLoadMore || !moeMeta) return;
         void runUmaMoeSearch(moeMeta.page + 1, true);
+    };
+
+    const handleBestComboMoeSearch = () => {
+        if (!moeSearchIsCurrent) {
+            void runUmaMoeSearch(0, false, false);
+            return;
+        }
+
+        if (!moeCanLoadMore || !moeMeta) return;
+        void runUmaMoeSearch(moeMeta.page + 1, true, false);
     };
 
     const handleAddFilter = (stateKey: string, filter: BaseFilter) => {
@@ -402,7 +339,6 @@ export default function VeteransPage() {
         races: showRacesSelector,
         skills: showSkillsSelector,
     };
-    const showOpenMyVeterans = !!accountVeteranSnapshot?.available && !accountVeteranMeta;
     const activeUmaMoeFilterCount = bluesFilters.length
         + aptitudeFilters.length
         + uniquesFilters.length
@@ -435,9 +371,47 @@ export default function VeteransPage() {
                 >
                     Best combo
                 </Button>
+                <Button
+                    variant={sourceTab === "bestGp" ? "primary" : "outline-secondary"}
+                    size="sm"
+                    onClick={() => setSourceTab("bestGp")}
+                >
+                    Best GP combo
+                </Button>
+                <Button
+                    variant={sourceTab === "settings" ? "primary" : "outline-secondary"}
+                    size="sm"
+                    onClick={() => setSourceTab("settings")}
+                >
+                    Settings
+                </Button>
             </div>
 
-            {sourceTab === "best" && (
+            {sourceTab === "settings" && (
+                <section className="vet-panel-card vet-settings-panel">
+                    <div className="vet-panel-header">
+                        <div>
+                            <h2 className="vet-panel-title">Settings</h2>
+                            <p className="vet-best-combo-description">
+                                Local browser settings for this tool.
+                            </p>
+                        </div>
+                    </div>
+                    <div className="vet-settings-section">
+                        <h3 className="vet-settings-title">uma.moe API key</h3>
+                        <p className="best-combo-hint">
+                            Used for uma.moe searches from the uma.moe and combo tabs. Stored only in this
+                            browser.
+                        </p>
+                        <UmaMoeApiKeyInput
+                            value={umaMoeApiKey}
+                            onChange={setUmaMoeApiKey}
+                        />
+                    </div>
+                </section>
+            )}
+
+            {(sourceTab === "best" || sourceTab === "bestGp") && (
                 <BestComboPanel
                     veterans={ownedVeterans}
                     config={FILTER_CONFIG}
@@ -445,10 +419,24 @@ export default function VeteransPage() {
                     onScoringChange={handleCustomScoringChange}
                     maxGpAffinity={customScoreRanges.maxGpAffinity}
                     maxRaceWins={customScoreRanges.maxRaceWins}
+                    moeVeterans={moeVeterans}
+                    moeSearching={moeSearching}
+                    moeError={moeError}
+                    moeSearchIsCurrent={moeSearchIsCurrent}
+                    moeCanLoadMore={moeCanLoadMore}
+                    onSearchMoe={handleBestComboMoeSearch}
+                    moeFilters={umaMoeSearchFilters}
+                    parentCharaIds={parentCharaIds}
+                    onParentCharaIdsChange={setParentCharaIds}
+                    onAddFilter={handleAddFilter}
+                    onRemoveFilter={handleRemoveFilter}
+                    onClearFilters={handleClearAllFilters}
+                    getAvailableFilterStats={(categoryId) => getAvailableStats(veterans, categoryId, true)}
+                    mode={sourceTab === "bestGp" ? "gp" : "target"}
                 />
             )}
 
-            {sourceTab !== "best" && <>
+            {sourceTab !== "best" && sourceTab !== "bestGp" && sourceTab !== "settings" && <>
             {sourceTab === "moe" && (
                 <section className="vet-moe-search-panel">
                     <div>
@@ -551,15 +539,8 @@ export default function VeteransPage() {
                     <div className="upload-zone" onClick={() => fileInputRef.current?.click()}>
                         <div className="upload-icon">Upload</div>
                         <div className="upload-label">No veterans loaded</div>
-                        <div className="upload-sublabel">Upload a JSON file or share link to get started</div>
+                        <div className="upload-sublabel">Upload a JSON file to get started</div>
                     </div>
-                    {showOpenMyVeterans ? (
-                        <div className="d-flex justify-content-center mb-3">
-                            <Button variant="outline-info" href="/veterans?mine=1">
-                                Open my veterans
-                            </Button>
-                        </div>
-                    ) : null}
                     <Alert variant="info" className="vet-upload-alert">
                         This page supports both veteran data extracted via the hachimi plugin on the <a href="https://github.com/ayaliz/horseACT#installation" target="_blank" rel="noreferrer">horseACT setup guide</a>, as well as the standalone umaextractor on <a href="https://github.com/xancia/UmaExtractor/releases/latest" target="_blank" rel="noreferrer">https://github.com/xancia/UmaExtractor/releases/latest</a>.
                     </Alert>
@@ -568,18 +549,6 @@ export default function VeteransPage() {
 
             {veterans.length > 0 && !renderError && (
                 <>
-                    {sourceTab === "owned" && accountVeteranMeta ? (
-                        <Alert variant="info">
-                            Loaded your stored veteran roster for viewer ID {accountVeteranMeta.viewerId}. Snapshot contains {accountVeteranMeta.veteranCount} veterans and was last updated on {new Date(accountVeteranMeta.updatedAt).toLocaleString()}.
-                        </Alert>
-                    ) : null}
-                    {sourceTab === "owned" && showOpenMyVeterans ? (
-                        <div className="d-flex justify-content-end mb-3">
-                            <Button variant="outline-info" href="/veterans?mine=1">
-                                Open my veterans
-                            </Button>
-                        </div>
-                    ) : null}
                     <div className="vet-top-layout">
                         <div className="vet-top-left">
                             {sourceTab === "owned" && (
@@ -695,11 +664,8 @@ export default function VeteransPage() {
                                 }}
                                 parent1={affinityParent1}
                                 parent2={affinityParent2}
-                                parent2IsBorrowed={parent2IsBorrowed}
                                 activeSlot={activeAffinitySlot}
                                 onLegacySlotClick={handleLegacySlotClick}
-                                onBorrowLookup={handleBorrowLookup}
-                                borrowLoading={borrowLoading}
                                 onReset={handleAffinityReset}
                                 onPlannerOpen={() => setShowPlanner(true)}
                                 onSparkProcOpen={() => setShowSparkProc(true)}
