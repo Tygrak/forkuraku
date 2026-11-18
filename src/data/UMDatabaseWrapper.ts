@@ -40,7 +40,11 @@ class _UMDatabaseWrapper {
         })
             .then((response) => {
             window.clearTimeout(timeoutId);
-            this.umdb = fromBinary(UMDatabaseSchema, pako.inflate(new Uint8Array(response)));
+            const bytes = new Uint8Array(response);
+            // Some static hosts decompress .gz responses automatically and omit
+            // the gzip magic bytes. Handle both raw gzip and already-inflated data.
+            const isGzip = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+            this.umdb = fromBinary(UMDatabaseSchema, isGzip ? pako.inflate(bytes) : bytes);
             this.supportCardRaceBonusByLimitBreak = {};
 
             this.umdb.chara.forEach((chara) => this.charas[chara.id!] = chara);

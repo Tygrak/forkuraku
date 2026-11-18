@@ -1,30 +1,21 @@
 # forkuraku
 
-A local-only, Veterans-focused fork of [Hakuraku](https://github.com/ayaliz/hakuraku).
+A static local-only, Veterans-focused fork of [Hakuraku](https://github.com/ayaliz/hakuraku).
 
-forkuraku keeps the Veterans browser and parent-combo search, and removes the rest of the Hakuraku site. It does not use the Hakuraku backend or account system.
+forkuraku keeps the Veterans browser and parent-combo search, and removes the rest of the Hakuraku site.
 
-## What is different from Hakuraku
+### Usage guide for CMs
 
-### Veterans-only UI
+1. Upload veterans.json, add API key from uma.moe (https://uma.moe/settings, create a new key, copy it in the site. it is saved locally only in your browser) 
+2. Select the best combo tab
+3. Select your target uma (the uma you will be training)
+4. Click custom scoring, inside it select pink preset based on track type, scroll down and select style preset type based on which style your trainee will use (front/pace/late/end). Optionally modify the custom scoring. Click apply and sort.
+5. Add any parent requirements if you need specific uniques guaranteed.
+6. Toggle on include uma.moe parents if you want to use a borrow. Inside it optionally select characters which you want to search for and what requirements they should fulfill.
+7. Add custom conditions if you want. For example if your uma needs to get dirt E to dirt A it is useful to add a 10* dirt condition.
+8. On top select which aptitudes you want to get to S.
+9. Scroll thru your options. You can click friend codes of uma.moe parents to copy them to clipboard.
 
-- Only `/` and `/veterans` render the app. Every other route redirects to `/veterans`.
-- Removed the routes and navigation for Race Analysis, Multi-Race Analysis, UmaLogs, Master Data, Notes, Setup Guide, Shop Refresh, Inheritance Factors, Auth, Account, and Privacy Policy.
-- Navigation only shows **Veterans**.
-
-### No backend or account system
-
-- Removed login, account, saved-roster loading, shared veteran links, friend-code borrow lookup, and HorseACT account-status checks.
-- The app makes no `/api/...` requests on load.
-- Veteran data comes from a local JSON file uploaded in **My veterans**. The file is parsed in the browser.
-- The upstream race simulator and its `/api/races/resimulate` endpoints are not used by this fork. The pages that called them are no longer routed.
-
-### Local settings
-
-- The uma.moe API key lives in a dedicated **Settings** tab.
-- It is saved in browser `localStorage` under `forkuraku.umaMoeApiKey`, not in the build or `.env` files.
-- The key is only sent to uma.moe when you run an uma.moe search.
-- The last selected target Uma is remembered under `forkuraku.veterans.lastTargetUma`.
 
 ### Combo search
 
@@ -35,21 +26,6 @@ forkuraku keeps the Veterans browser and parent-combo search, and removes the re
 - Star conditions show the resulting starting aptitude grades.
 - Non-playable characters are filtered out of the target list.
 - Kept parent filters, uma.moe pagination, parent spark summaries, per-spark inherit details, and the custom scoring presets.
-
-### GameTora data
-
-- The processed GameTora datasets are committed:
-  - `src/data/gametoraCharacterSkills.json`
-  - `src/data/gametoraCharacterAptitudes.json`
-- The scraper and raw cache are local-only under `data/scraping/` and are gitignored.
-- If that folder is present, run `yarn scrape:gametora` to rebuild the datasets. Add `--refresh` to fetch pages again.
-
-### Branding and cleanup
-
-- Renamed to **forkuraku**, with a carrot-on-fork favicon.
-- Footer reads: `slopforked from Hakuraku by ayaliz`.
-- Social preview metadata is fork-specific.
-- Removed the unused notes content, the old social preview image, and several assets that were only used by deleted pages.
 
 ## Running
 
@@ -62,12 +38,20 @@ Other useful commands:
 
 ```powershell
 yarn build
-
-# local-only, requires data/scraping/
-yarn scrape:gametora
 ```
 
 No backend is required for the app itself. The bundled game data in `public/data/` is required.
+
+## GitHub Pages
+
+The included `.github/workflows/deploy.yml` builds and deploys the app. It:
+
+- Sets `VITE_BASE_PATH` from the Pages base path, so project sites work under `/<repo>/`.
+- Sets the React Router basename from `BASE_URL`.
+- Generates `404.html` from the built app shell so deep links load the SPA.
+- Includes `.nojekyll`.
+
+To deploy, enable GitHub Pages in the repository settings and set the source to **GitHub Actions**. The workflow runs on pushes to `main` and can also be started manually.
 
 ## Data and privacy
 

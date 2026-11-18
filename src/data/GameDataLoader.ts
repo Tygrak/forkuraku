@@ -25,7 +25,13 @@ class GameDataLoaderClass {
                 throw new Error(`Failed to fetch data/gamedata.bin.gz (${response.status} ${response.statusText})`);
             }
             const buffer = await response.arrayBuffer();
-            const inflated = pako.inflate(new Uint8Array(buffer), { to: "string" });
+            const bytes = new Uint8Array(buffer);
+            // Some static hosts decompress .gz responses automatically and omit
+            // the gzip magic bytes. Handle both raw gzip and already-inflated data.
+            const isGzip = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+            const inflated = isGzip
+                ? pako.inflate(bytes, { to: "string" })
+                : new TextDecoder().decode(bytes);
             this.data = JSON.parse(inflated);
             this.skillNameFallbacksById = null;
         } finally {

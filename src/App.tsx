@@ -7,6 +7,8 @@ import UMDatabaseWrapper from './data/UMDatabaseWrapper';
 import GameDataLoader from './data/GameDataLoader';
 import PageMeta from "./components/PageMeta";
 
+const ROUTER_BASE = import.meta.env.BASE_URL.replace(/\/$/, "") || "/";
+
 // Wraps lazy() to auto-reload once on chunk load failure (stale deploy hash mismatch).
 function lazyWithReload<T extends React.ComponentType<any>>(
     factory: () => Promise<{ default: T }>,
@@ -84,7 +86,7 @@ export default function App() {
         return <div><Spinner animation="border" /> Loading UMDatabase...</div>;
     }
 
-    return <BrowserRouter>
+    return <BrowserRouter basename={ROUTER_BASE}>
         <AppShell />
     </BrowserRouter>;
 }

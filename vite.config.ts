@@ -1,6 +1,6 @@
 import { defineConfig, loadEnv, Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -21,6 +21,24 @@ const serveGzRaw = (): Plugin => ({
         });
     },
 });
+
+// GitHub Pages serves 404.html for unknown paths. Reuse the built app shell so
+// BrowserRouter can resolve deep links instead of showing a static 404.
+const spaFallback404 = (): Plugin => ({
+    name: 'spa-fallback-404',
+    apply: 'build',
+    closeBundle() {
+        const indexPath = resolve('dist', 'index.html');
+        const fallbackPath = resolve('dist', '404.html');
+        if (existsSync(indexPath)) copyFileSync(indexPath, fallbackPath);
+    },
+});
+
+const normalizeBase = (value: string | undefined): string => {
+    const trimmed = value?.trim();
+    if (!trimmed || trimmed === '/') return '/';
+    return `/${trimmed.replace(/^\/+|\/+$/g, '')}/`;
+};
 
 export default defineConfig(async ({ mode, command }) => {
     const env = loadEnv(mode, process.cwd(), "");
@@ -49,8 +67,8 @@ export default defineConfig(async ({ mode, command }) => {
         : undefined;
 
     return {
-        plugins: [react(), serveGzRaw(), ...(skillPreview ? [skillPreview] : []), ...(localPreview ? [localPreview] : [])],
-        base: env.VITE_BASE_PATH ?? '/',
+        plugins: [react(), serveGzRaw(), spaFallback404(), ...(skillPreview ? [skillPreview] : []), ...(localPreview ? [localPreview] : [])],
+        base: normalizeBase(env.VITE_BASE_PATH),
         server: {
             proxy: apiProxy,
             watch: {
