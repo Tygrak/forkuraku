@@ -2,13 +2,19 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Alert, Button, ButtonGroup, Form } from "react-bootstrap";
 import AssetLoader from "../../data/AssetLoader";
 import UMDatabaseWrapper from "../../data/UMDatabaseWrapper";
-import { isPlayableCharacter } from "../../data/GameToraCharacterSkills";
 import { CustomScoringConfig, BaseFilter, Veteran } from "./types";
 import { formatCardName, getCardName, getCharaImageUrl, getFactorColor, getRankGradeLabel } from "./VeteransUIHelper";
 import CustomScoringPanel from "./CustomScoringPanel";
 import FilterToolbar from "./FilterToolbar";
 import ActiveFiltersList from "./ActiveFiltersList";
 import ParentCharacterFilter from "./ParentCharacterFilter";
+import {
+    getTargetCardOptions,
+    LAST_TARGET_UMA_KEY,
+    loadLastTargetUma,
+    TargetCardOption,
+} from "./targetOptions";
+import type { QuickStartPreset } from "./quickStart";
 import {
     APTITUDE_GROUP_LABELS,
     APTITUDE_OPTIONS,
@@ -59,6 +65,8 @@ type Props = {
     onClearFilters: () => void;
     getAvailableFilterStats: (categoryId: number) => string[];
     mode?: BestComboMode;
+    initialPreset?: QuickStartPreset | null;
+    onInitialPresetApplied?: () => void;
 };
 
 type RankMode = "score" | "sChance";
@@ -66,26 +74,6 @@ type RankMode = "score" | "sChance";
 const APTITUDE_GROUPS: AptitudeGroup[] = ["Ground", "Distance", "Strategy"];
 const RESULT_PAGE_SIZE = 25;
 const BEST_COMBO_SCORE_WEIGHTS_KEY = "hakuraku.veterans.bestComboScoreWeights.v2";
-const LAST_TARGET_UMA_KEY = "forkuraku.veterans.lastTargetUma";
-
-const loadLastTargetUma = (): number | null => {
-    if (typeof localStorage === "undefined") return null;
-
-    try {
-        const raw = localStorage.getItem(LAST_TARGET_UMA_KEY);
-        if (!raw) return null;
-
-        const charaId = Number(raw);
-        return Number.isInteger(charaId)
-            && charaId > 0
-            && !!UMDatabaseWrapper.charas[charaId]?.name
-            && isPlayableCharacter(charaId)
-            ? charaId
-            : null;
-    } catch {
-        return null;
-    }
-};
 
 const normalizeScoreWeight = (value: unknown, fallback: number): number =>
     typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : fallback;
@@ -410,19 +398,38 @@ const BestComboPanel = ({
     onClearFilters,
     getAvailableFilterStats,
     mode = "target",
+    initialPreset = null,
+    onInitialPresetApplied,
 }: Props) => {
     const isGpMode = mode === "gp";
-    const [targetCharaId, setTargetCharaId] = useState<number | null>(loadLastTargetUma);
+    const [targetCardId, setTargetCardId] = useState<number | null>(loadLastTargetUma);
+    const targetCharaId = targetCardId === null ? null : Math.floor(targetCardId / 100);
     const [sAptitudeKeys, setSAptitudeKeys] = useState<number[]>([]);
     const [conditions, setConditions] = useState<BestComboCondition[]>([]);
     const [visibleCount, setVisibleCount] = useState(RESULT_PAGE_SIZE);
     const [rankMode, setRankMode] = useState<RankMode>("score");
-    const [requiredParent1, setRequiredParent1] = useState<number | null>(null);
-    const [requiredParent2, setRequiredParent2] = useState<number | null>(null);
+    const [requiredParent1CardIds, setRequiredParent1CardIds] = useState<number[]>([]);
+    const [requiredParent2CardIds, setRequiredParent2CardIds] = useState<number[]>([]);
     const [includeMoeParents, setIncludeMoeParents] = useState(false);
     const [openMoeFilter, setOpenMoeFilter] = useState<string | null>(null);
     const [scoreWeights, setScoreWeights] = useState<BestComboScoreWeights>(loadScoreWeights);
     const nextConditionId = useRef(1);
+    const appliedPresetId = useRef<number | null>(null);
+
+    useEffect(() => {
+        if (!initialPreset || appliedPresetId.current === initialPreset.id) return;
+
+        appliedPresetId.current = initialPreset.id;
+        setTargetCardId(initialPreset.targetCardId);
+        setRequiredParent1CardIds(initialPreset.forcedParent1);
+        setRequiredParent2CardIds(initialPreset.forcedParent2);
+        setIncludeMoeParents(initialPreset.useUmaMoe);
+        setSAptitudeKeys(initialPreset.sAptitudeKeys);
+        setConditions(initialPreset.conditions);
+        setRankMode("score");
+        setVisibleCount(RESULT_PAGE_SIZE);
+        onInitialPresetApplied?.();
+    }, [initialPreset, onInitialPresetApplied]);
 
     useEffect(() => {
         try {
@@ -434,21 +441,17 @@ const BestComboPanel = ({
 
     useEffect(() => {
         try {
-            if (targetCharaId === null) {
+            if (targetCardId === null) {
                 localStorage.removeItem(LAST_TARGET_UMA_KEY);
             } else {
-                localStorage.setItem(LAST_TARGET_UMA_KEY, String(targetCharaId));
+                localStorage.setItem(LAST_TARGET_UMA_KEY, String(targetCardId));
             }
         } catch {
             // Storage may be unavailable; keep the in-memory selection.
         }
-    }, [targetCharaId]);
+    }, [targetCardId]);
 
-    const charaOptions = useMemo(() => {
-        return Object.values(UMDatabaseWrapper.charas)
-            .filter(chara => chara.id !== undefined && !!chara.name && isPlayableCharacter(chara.id))
-            .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
-    }, []);
+    const targetCardOptions = useMemo<TargetCardOption[]>(() => getTargetCardOptions(), []);
 
     const evaluationVeterans = useMemo(
         () => includeMoeParents && moeVeterans.length > 0
@@ -489,7 +492,7 @@ const BestComboPanel = ({
     }, [conditions]);
 
     const starConditionSummaries = useMemo(() => {
-        if (targetCharaId === null) return [];
+        if (targetCardId === null) return [];
 
         const summaries: Array<{
             aptitudeKey: number;
@@ -504,7 +507,7 @@ const BestComboPanel = ({
             if (stars <= 0) continue;
 
             const option = getAptitudeOption(aptitudeKey);
-            const baseGrade = getTargetBaseAptitudeGrade(targetCharaId, aptitudeKey);
+            const baseGrade = getTargetBaseAptitudeGrade(targetCardId, aptitudeKey);
             const startingGrade = getStartingAptitudeGrade(baseGrade, stars);
             if (!option || !startingGrade) continue;
 
@@ -512,7 +515,7 @@ const BestComboPanel = ({
         }
 
         return summaries.sort((a, b) => a.option.label.localeCompare(b.option.label));
-    }, [conditionMinimums, targetCharaId]);
+    }, [conditionMinimums, targetCardId]);
 
     const evaluation = useMemo(() => {
         if (
@@ -526,12 +529,13 @@ const BestComboPanel = ({
         return evaluateBestCombos(
             evaluationVeterans,
             targetCharaId,
+            targetCardId,
             isGpMode ? [] : orderedSAptitudes.map(option => option.key),
             isGpMode ? [] : conditions,
             scoringConfig,
             aptitudeData,
-            requiredParent1,
-            requiredParent2,
+            requiredParent1CardIds,
+            requiredParent2CardIds,
             scoreWeights,
             includeMoeParents
                 ? (first, second) => !(moeVeteranSet.has(first) && moeVeteranSet.has(second))
@@ -541,12 +545,13 @@ const BestComboPanel = ({
     }, [
         evaluationVeterans,
         targetCharaId,
+        targetCardId,
         orderedSAptitudes,
         conditions,
         scoringConfig,
         aptitudeData,
-        requiredParent1,
-        requiredParent2,
+        requiredParent1CardIds,
+        requiredParent2CardIds,
         scoreWeights,
         includeMoeParents,
         moeVeteranSet,
@@ -586,16 +591,17 @@ const BestComboPanel = ({
     }, [evaluation, rankMode, isGpMode]);
 
     const orientedResults = useMemo(() => {
-        if (requiredParent1 === null && requiredParent2 === null) return rankedResults;
+        const required1 = new Set(requiredParent1CardIds);
+        const required2 = new Set(requiredParent2CardIds);
+        if (required1.size === 0 && required2.size === 0) return rankedResults;
 
         return rankedResults.map(result => {
-            const firstCharaId = Math.floor(result.parent1.card_id / 100);
-            const secondCharaId = Math.floor(result.parent2.card_id / 100);
-            const shouldSwap = requiredParent1 !== null
-                ? firstCharaId !== requiredParent1
-                : secondCharaId !== requiredParent2;
+            const forward = (required1.size === 0 || required1.has(result.parent1.card_id))
+                && (required2.size === 0 || required2.has(result.parent2.card_id));
+            const reverse = (required1.size === 0 || required1.has(result.parent2.card_id))
+                && (required2.size === 0 || required2.has(result.parent1.card_id));
 
-            if (!shouldSwap) return result;
+            if (forward || !reverse) return result;
 
             return {
                 ...result,
@@ -605,27 +611,11 @@ const BestComboPanel = ({
                 secondTree: result.firstTree,
             };
         });
-    }, [rankedResults, requiredParent1, requiredParent2]);
+    }, [rankedResults, requiredParent1CardIds, requiredParent2CardIds]);
 
     useEffect(() => {
         setVisibleCount(RESULT_PAGE_SIZE);
-    }, [targetCharaId, sAptitudeKeys, conditions, rankMode, requiredParent1, requiredParent2, includeMoeParents, moeVeterans, mode]);
-
-    const updateParentRequirement = (side: 1 | 2, rawValue: string) => {
-        const charaId = rawValue ? Number(rawValue) : null;
-
-        if (side === 1) {
-            setRequiredParent1(charaId);
-            if (charaId !== null && requiredParent2 === charaId) {
-                setRequiredParent2(null);
-            }
-        } else {
-            setRequiredParent2(charaId);
-            if (charaId !== null && requiredParent1 === charaId) {
-                setRequiredParent1(null);
-            }
-        }
-    };
+    }, [targetCardId, sAptitudeKeys, conditions, rankMode, requiredParent1CardIds, requiredParent2CardIds, includeMoeParents, moeVeterans, mode]);
 
     const toggleSAptitude = (aptitudeKey: number) => {
         setSAptitudeKeys(previous =>
@@ -734,15 +724,17 @@ const BestComboPanel = ({
                             <Form.Select
                                 id="best-combo-target"
                                 size="sm"
-                                value={targetCharaId ?? ""}
-                                onChange={event => setTargetCharaId(event.target.value ? Number(event.target.value) : null)}
+                                value={targetCardId ?? ""}
+                                onChange={event => setTargetCardId(event.target.value ? Number(event.target.value) : null)}
                             >
                                 <option value="">Select target {isGpMode ? "GP " : ""}Uma...</option>
-                                {charaOptions.map(chara => (
-                                    <option key={chara.id} value={chara.id}>{chara.name}</option>
+                                {targetCardOptions.map(option => (
+                                    <option key={option.id} value={option.id}>
+                                        {option.charaName} — {option.cardName}
+                                    </option>
                                 ))}
                             </Form.Select>
-                            {targetCharaId !== null && (
+                            {targetCardId !== null && targetCharaId !== null && (
                                 <div className="best-combo-target">
                                     <img
                                         className="best-combo-target-img"
@@ -750,7 +742,11 @@ const BestComboPanel = ({
                                         alt={UMDatabaseWrapper.charas[targetCharaId]?.name ?? "Target Uma"}
                                         onError={event => { (event.target as HTMLImageElement).style.opacity = "0"; }}
                                     />
-                                    <span>{UMDatabaseWrapper.charas[targetCharaId]?.name ?? `Chara ${targetCharaId}`}</span>
+                                    <span>
+                                        {UMDatabaseWrapper.charas[targetCharaId]?.name ?? `Chara ${targetCharaId}`}
+                                        {" "}
+                                        {UMDatabaseWrapper.cards[targetCardId]?.name ?? ""}
+                                    </span>
                                 </div>
                             )}
                         </div>
@@ -792,10 +788,10 @@ const BestComboPanel = ({
                             <Button
                                 size="sm"
                                 variant="outline-secondary"
-                                disabled={requiredParent1 === null && requiredParent2 === null}
+                                disabled={requiredParent1CardIds.length === 0 && requiredParent2CardIds.length === 0}
                                 onClick={() => {
-                                    setRequiredParent1(null);
-                                    setRequiredParent2(null);
+                                    setRequiredParent1CardIds([]);
+                                    setRequiredParent2CardIds([]);
                                 }}
                             >
                                 Clear
@@ -803,42 +799,30 @@ const BestComboPanel = ({
                         </div>
                         <div className="best-combo-parent-selects">
                             <div className="best-combo-parent-select">
-                                <span className="best-combo-parent-select-label">Parent 1 must be</span>
-                                <Form.Select
-                                    size="sm"
-                                    value={requiredParent1 ?? ""}
-                                    onChange={event => updateParentRequirement(1, event.target.value)}
-                                >
-                                    <option value="">Any Uma</option>
-                                    {charaOptions.map(chara => (
-                                        <option
-                                            key={chara.id}
-                                            value={chara.id}
-                                            disabled={chara.id === requiredParent2}
-                                        >
-                                            {chara.name}
-                                        </option>
-                                    ))}
-                                </Form.Select>
+                                <span className="best-combo-parent-select-label">Parent 1 must be one of</span>
+                                <ParentCharacterFilter
+                                    veterans={evaluationVeterans}
+                                    selected={requiredParent1CardIds}
+                                    onChange={setRequiredParent1CardIds}
+                                    includeAllCharacters
+                                    selectionMode="card"
+                                    label="Parent 1"
+                                    title="Select Parent 1 costume"
+                                    excludedIds={requiredParent2CardIds}
+                                />
                             </div>
                             <div className="best-combo-parent-select">
-                                <span className="best-combo-parent-select-label">Parent 2 must be</span>
-                                <Form.Select
-                                    size="sm"
-                                    value={requiredParent2 ?? ""}
-                                    onChange={event => updateParentRequirement(2, event.target.value)}
-                                >
-                                    <option value="">Any Uma</option>
-                                    {charaOptions.map(chara => (
-                                        <option
-                                            key={chara.id}
-                                            value={chara.id}
-                                            disabled={chara.id === requiredParent1}
-                                        >
-                                            {chara.name}
-                                        </option>
-                                    ))}
-                                </Form.Select>
+                                <span className="best-combo-parent-select-label">Parent 2 must be one of</span>
+                                <ParentCharacterFilter
+                                    veterans={evaluationVeterans}
+                                    selected={requiredParent2CardIds}
+                                    onChange={setRequiredParent2CardIds}
+                                    includeAllCharacters
+                                    selectionMode="card"
+                                    label="Parent 2"
+                                    title="Select Parent 2 costume"
+                                    excludedIds={requiredParent1CardIds}
+                                />
                             </div>
                         </div>
                     </div>
@@ -1100,7 +1084,7 @@ const BestComboPanel = ({
                                             min={0}
                                             value={condition.min}
                                             title={condition.metric === "stars"
-                                                ? `Minimum total stars. At this minimum the target starts at ${getStartingAptitudeGrade(getTargetBaseAptitudeGrade(targetCharaId, condition.aptitudeKey), condition.min) ?? "?"}.`
+                                                ? `Minimum total stars. At this minimum the target starts at ${getStartingAptitudeGrade(getTargetBaseAptitudeGrade(targetCardId, condition.aptitudeKey), condition.min) ?? "?"}.`
                                                 : "Minimum spark count."}
                                             onChange={event => updateCondition(condition.id, {
                                                 min: Math.max(0, Number(event.target.value) || 0),
@@ -1224,7 +1208,7 @@ const BestComboPanel = ({
                                                                     const minStars = conditionMinimums.get(option.key)?.stars;
                                                                     const stars = result.totals.get(option.key)?.stars ?? 0;
                                                                     const startingGrade = getStartingAptitudeGrade(
-                                                                        getTargetBaseAptitudeGrade(targetCharaId, option.key),
+                                                                        getTargetBaseAptitudeGrade(targetCardId, option.key),
                                                                         stars,
                                                                     );
                                                                     return (
@@ -1248,7 +1232,7 @@ const BestComboPanel = ({
                                                                     const value = result.conditionValues[conditionIndex] ?? 0;
                                                                     const startingGrade = condition.metric === "stars"
                                                                         ? getStartingAptitudeGrade(
-                                                                            getTargetBaseAptitudeGrade(targetCharaId, condition.aptitudeKey),
+                                                                            getTargetBaseAptitudeGrade(targetCardId, condition.aptitudeKey),
                                                                             value,
                                                                         )
                                                                         : null;

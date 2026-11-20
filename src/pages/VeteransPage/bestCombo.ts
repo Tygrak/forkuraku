@@ -8,8 +8,8 @@ import {
     getFactorCategory,
 } from "../../data/VeteransHelper";
 import UMDatabaseWrapper from "../../data/UMDatabaseWrapper";
-import { getGuaranteedCharacterSkills } from "../../data/GameToraCharacterSkills";
-import { AptitudeGrade, getCharacterBaseAptitudes } from "../../data/GameToraCharacterAptitudes";
+import { getGuaranteedCardSkills, getGuaranteedCharacterSkills } from "../../data/GameToraCharacterSkills";
+import { AptitudeGrade, getCardBaseAptitudes, getCharacterBaseAptitudes } from "../../data/GameToraCharacterAptitudes";
 import { getSparkScoreValue } from "./customScoring";
 import { CustomScoringConfig, Veteran } from "./types";
 
@@ -85,15 +85,15 @@ export const getProcsNeededForS = (startingGrade: AptitudeGrade | null | undefin
 };
 
 export const getTargetBaseAptitudeGrade = (
-    targetCharaId: number | null,
+    targetCardId: number | null,
     aptitudeKey: number,
 ): AptitudeGrade | null => {
-    if (targetCharaId === null) return null;
+    if (targetCardId === null) return null;
 
     const index = APTITUDE_INDEX_BY_KEY.get(aptitudeKey);
     if (index === undefined) return null;
 
-    return getCharacterBaseAptitudes(targetCharaId)?.[index] ?? null;
+    return getCardBaseAptitudes(targetCardId)?.[index] ?? null;
 };
 
 export type AptitudeSourceSlot = "self" | "gp1" | "gp2";
@@ -800,12 +800,13 @@ const getGpSkillScore = (
 export const evaluateBestCombos = (
     veterans: Veteran[],
     targetCharaId: number,
+    targetCardId: number | null,
     sAptitudeKeys: number[],
     conditions: BestComboCondition[],
     scoringConfig?: CustomScoringConfig,
     dataByVeteran?: Map<Veteran, VeteranAptitudeData>,
-    requiredParent1CharaId?: number | null,
-    requiredParent2CharaId?: number | null,
+    requiredParent1CardIds?: number[] | null,
+    requiredParent2CardIds?: number[] | null,
     scoreWeights: BestComboScoreWeights = DEFAULT_BEST_COMBO_SCORE_WEIGHTS,
     pairFilter?: (first: Veteran, second: Veteran) => boolean,
     mode: BestComboMode = "target",
@@ -823,12 +824,16 @@ export const evaluateBestCombos = (
 
     const results: BestComboResult[] = [];
     let evaluatedCount = 0;
-    const requiredParent1 = requiredParent1CharaId ?? null;
-    const requiredParent2 = requiredParent2CharaId ?? null;
+    const requiredParent1 = new Set(requiredParent1CardIds ?? []);
+    const requiredParent2 = new Set(requiredParent2CardIds ?? []);
     const targetName = UMDatabaseWrapper.charas[targetCharaId]?.name;
-    const targetBaseAptitudes = getCharacterBaseAptitudes(targetCharaId);
+    const targetBaseAptitudes = targetCardId !== null
+        ? getCardBaseAptitudes(targetCardId)
+        : getCharacterBaseAptitudes(targetCharaId);
     const guaranteedTargetSkills = mode === "gp"
-        ? getGuaranteedCharacterSkills(targetCharaId)
+        ? targetCardId !== null
+            ? getGuaranteedCardSkills(targetCardId)
+            : getGuaranteedCharacterSkills(targetCharaId)
         : new Set<string>();
 
     for (let i = 0; i < veterans.length; i++) {
@@ -861,15 +866,11 @@ export const evaluateBestCombos = (
 
             if (pairFilter && !pairFilter(parent1, parent2)) continue;
 
-            if (requiredParent1 !== null && requiredParent2 !== null) {
-                const forwardMatch = parent1CharaId === requiredParent1 && parent2CharaId === requiredParent2;
-                const reverseMatch = parent1CharaId === requiredParent2 && parent2CharaId === requiredParent1;
-                if (!forwardMatch && !reverseMatch) continue;
-            } else if (requiredParent1 !== null) {
-                if (parent1CharaId !== requiredParent1 && parent2CharaId !== requiredParent1) continue;
-            } else if (requiredParent2 !== null) {
-                if (parent1CharaId !== requiredParent2 && parent2CharaId !== requiredParent2) continue;
-            }
+            const forwardMatch = (requiredParent1.size === 0 || requiredParent1.has(parent1.card_id))
+                && (requiredParent2.size === 0 || requiredParent2.has(parent2.card_id));
+            const reverseMatch = (requiredParent1.size === 0 || requiredParent1.has(parent2.card_id))
+                && (requiredParent2.size === 0 || requiredParent2.has(parent1.card_id));
+            if (!forwardMatch && !reverseMatch) continue;
 
             evaluatedCount++;
 

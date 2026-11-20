@@ -16,6 +16,13 @@ import OptimizerPanel from "./VeteransPage/OptimizerPanel";
 import AffinityCalculatorPanel from "./VeteransPage/AffinityCalculatorPanel";
 import RacePlannerModal from "./VeteransPage/RacePlannerModal";
 import SparkProcModal from "./VeteransPage/SparkProcModal";
+import QuickStartPanel from "./VeteransPage/QuickStartPanel";
+import type { QuickStartPreset, QuickStartRequest } from "./VeteransPage/quickStart";
+import {
+    clearStoredVeterans,
+    loadStoredVeterans,
+    saveStoredVeterans,
+} from "./VeteransPage/veteranStorage";
 import { applyFiltersAndSort, getAvailableStats } from "./VeteransPage/VeteransLogic";
 import {
     calculateCustomScore,
@@ -40,7 +47,10 @@ export default function VeteransPage() {
     const vetListRef = useRef<HTMLDivElement>(null);
 
     const [ownedVeterans, setOwnedVeterans] = useState<Veteran[]>([]);
-    const [sourceTab, setSourceTab] = useState<"owned" | "moe" | "best" | "bestGp" | "settings">("owned");
+    const [veteransLoading, setVeteransLoading] = useState(true);
+    const rosterTouchedRef = useRef(false);
+    const [sourceTab, setSourceTab] = useState<"quickStart" | "owned" | "moe" | "best" | "bestGp" | "settings">("owned");
+    const [quickStartRequest, setQuickStartRequest] = useState<QuickStartPreset | null>(null);
     const [moeVeterans, setMoeVeterans] = useState<Veteran[]>([]);
     const [moeSearching, setMoeSearching] = useState(false);
     const [moeError, setMoeError] = useState("");
@@ -59,6 +69,29 @@ export default function VeteransPage() {
     useEffect(() => {
         saveUmaMoeApiKey(umaMoeApiKey);
     }, [umaMoeApiKey]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        loadStoredVeterans()
+            .then(stored => {
+                if (!cancelled && !rosterTouchedRef.current && stored) {
+                    setOwnedVeterans(stored);
+                }
+            })
+            .catch(err => {
+                if (!cancelled) {
+                    setError(`Failed to load stored veterans: ${err instanceof Error ? err.message : String(err)}`);
+                }
+            })
+            .finally(() => {
+                if (!cancelled) setVeteransLoading(false);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     useEffect(() => {
         if (activeAffinitySlot && vetListRef.current) {
@@ -185,15 +218,33 @@ export default function VeteransPage() {
             try {
                 const parsed = JSON.parse(String(reader.result ?? ""));
                 if (!Array.isArray(parsed)) throw new Error("Not an array");
+                rosterTouchedRef.current = true;
                 setOwnedVeterans(parsed);
+                setVeteransLoading(false);
                 setSourceTab("owned");
                 setError("");
+                void saveStoredVeterans(parsed).catch(err => {
+                    setError(`Loaded veterans but could not save them: ${err instanceof Error ? err.message : String(err)}`);
+                });
             } catch (err) {
                 setError(`Failed to parse JSON: ${err}`);
             }
         };
         reader.readAsText(file);
         e.target.value = "";
+    };
+
+    const handleClearVeterans = () => {
+        rosterTouchedRef.current = true;
+        setOwnedVeterans([]);
+        setVeteransLoading(false);
+        setAffinityParent1(null);
+        setAffinityParent2(null);
+        setActiveAffinitySlot(null);
+        setError("");
+        void clearStoredVeterans().catch(err => {
+            setError(`Failed to clear stored veterans: ${err instanceof Error ? err.message : String(err)}`);
+        });
     };
 
     const runUmaMoeSearch = async (page: number, append: boolean, switchTab = true) => {
@@ -241,6 +292,126 @@ export default function VeteransPage() {
 
         if (!moeCanLoadMore || !moeMeta) return;
         void runUmaMoeSearch(moeMeta.page + 1, true, false);
+    };
+
+    const runQuickStartMoeSearches = async (
+        request: QuickStartRequest,
+        moeParentIds: number[],
+        filters: UmaMoeSearchFilters,
+    ) => {
+        setMoeVeterans([]);
+        setMoeMeta(null);
+        setMoeSearchParamsKey(null);
+
+        if (!umaMoeApiKey.trim()) {
+            setMoeError("Missing uma.moe API key. Add it in the Settings tab.");
+            return;
+        }
+
+        setMoeSearching(true);
+        setMoeError("");
+
+        const signature = JSON.stringify({
+            style: request.scoring.skillSparkStyle,
+            weights: request.scoring.skillSparkWeights[request.scoring.skillSparkStyle],
+            pinkPreset: request.scoring.pinkPreset,
+            characters: [...moeParentIds].sort((a, b) => a - b),
+            filters,
+        });
+
+        const forcedCardIds = new Set([
+            ...request.preset.forcedParent1,
+            ...request.preset.forcedParent2,
+        ]);
+        const filterForcedCards = (veterans: Veteran[]) => forcedCardIds.size > 0
+            ? veterans.filter(veteran => forcedCardIds.has(veteran.card_id))
+            : veterans;
+
+        let collected: Veteran[] = [];
+        let lastMeta: UmaMoeSearchResult | null = null;
+
+        try {
+            let page = 0;
+            let totalPages = 1;
+
+            while (page < 3 && page < totalPages) {
+                const result = await searchUmaMoeVeterans(
+                    request.scoring,
+                    moeParentIds,
+                    filters,
+                    page,
+                    umaMoeApiKey,
+                );
+
+                collected = [...collected, ...result.veterans];
+                totalPages = result.totalPages;
+                lastMeta = result;
+                page += 1;
+
+                if (page < 3 && page < totalPages) {
+                    await new Promise(resolve => window.setTimeout(resolve, 450));
+                }
+            }
+
+            const seen = new Set<string>();
+            const deduped = filterForcedCards(collected).filter(veteran => {
+                const key = String(veteran.trained_chara_id);
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+
+            setMoeVeterans(deduped);
+            setMoeMeta(lastMeta);
+            setMoeSearchParamsKey(signature);
+            setActiveSort("custom");
+        } catch (err: any) {
+            const partial = filterForcedCards(collected);
+            if (partial.length > 0) {
+                const seen = new Set<string>();
+                setMoeVeterans(partial.filter(veteran => {
+                    const key = String(veteran.trained_chara_id);
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                }));
+                setMoeMeta(lastMeta);
+                setMoeSearchParamsKey(signature);
+            }
+            setMoeError(err?.message ?? String(err));
+        } finally {
+            setMoeSearching(false);
+        }
+    };
+
+    const handleQuickStartSearch = (request: QuickStartRequest) => {
+        setCustomScoringConfig(request.scoring);
+        setActiveSort("custom");
+        setQuickStartRequest(request.preset);
+        setSourceTab(request.preset.mode === "gp" ? "bestGp" : "best");
+
+        if (!request.preset.useUmaMoe) {
+            setMoeError("");
+            return;
+        }
+
+        // Forced parent entries are card (costume) IDs; uma.moe filters by character.
+        const moeParentIds = Array.from(new Set([
+            ...request.preset.forcedParent1,
+            ...request.preset.forcedParent2,
+        ].map(cardId => Math.floor(cardId / 100)))).sort((a, b) => a - b);
+
+        const mergedFilters: UmaMoeSearchFilters = {
+            ...umaMoeSearchFilters,
+            aptitude: [
+                ...umaMoeSearchFilters.aptitude.filter(filter => !filter.id.startsWith("quick-")),
+                ...request.moeAptitudeFilters,
+            ],
+        };
+
+        setParentCharaIds(moeParentIds);
+        setAptitudeFilters(mergedFilters.aptitude);
+        void runQuickStartMoeSearches(request, moeParentIds, mergedFilters);
     };
 
     const handleAddFilter = (stateKey: string, filter: BaseFilter) => {
@@ -351,6 +522,13 @@ export default function VeteransPage() {
 
             <div className="vet-source-tabs">
                 <Button
+                    variant={sourceTab === "quickStart" ? "primary" : "outline-secondary"}
+                    size="sm"
+                    onClick={() => setSourceTab("quickStart")}
+                >
+                    Quick start
+                </Button>
+                <Button
                     variant={sourceTab === "owned" ? "primary" : "outline-secondary"}
                     size="sm"
                     onClick={() => setSourceTab("owned")}
@@ -387,6 +565,18 @@ export default function VeteransPage() {
                 </Button>
             </div>
 
+            {sourceTab === "quickStart" && (
+                <QuickStartPanel
+                    veterans={ownedVeterans}
+                    veteransLoading={veteransLoading}
+                    customScoringConfig={customScoringConfig}
+                    umaMoeApiKey={umaMoeApiKey}
+                    onSearch={handleQuickStartSearch}
+                    onOpenSettings={() => setSourceTab("settings")}
+                    onOpenVeterans={() => setSourceTab("owned")}
+                />
+            )}
+
             {sourceTab === "settings" && (
                 <section className="vet-panel-card vet-settings-panel">
                     <div className="vet-panel-header">
@@ -396,6 +586,36 @@ export default function VeteransPage() {
                                 Local browser settings for this tool.
                             </p>
                         </div>
+                    </div>
+                    <div className="vet-settings-section">
+                        <h3 className="vet-settings-title">Veterans roster</h3>
+                        <p className="best-combo-hint">
+                            Loaded from a local JSON file and remembered in this browser.
+                        </p>
+                        <div className="vet-settings-actions">
+                            <Button
+                                size="sm"
+                                variant="outline-info"
+                                onClick={() => fileInputRef.current?.click()}
+                            >
+                                Reload veterans
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="outline-danger"
+                                onClick={handleClearVeterans}
+                                disabled={ownedVeterans.length === 0}
+                            >
+                                Clear
+                            </Button>
+                        </div>
+                        <p className="best-combo-hint">
+                            {veteransLoading
+                                ? "Loading stored roster..."
+                                : ownedVeterans.length > 0
+                                    ? `${ownedVeterans.length} veterans stored.`
+                                    : "No veterans stored."}
+                        </p>
                     </div>
                     <div className="vet-settings-section">
                         <h3 className="vet-settings-title">uma.moe API key</h3>
@@ -433,10 +653,12 @@ export default function VeteransPage() {
                     onClearFilters={handleClearAllFilters}
                     getAvailableFilterStats={(categoryId) => getAvailableStats(veterans, categoryId, true)}
                     mode={sourceTab === "bestGp" ? "gp" : "target"}
+                    initialPreset={quickStartRequest}
+                    onInitialPresetApplied={() => setQuickStartRequest(null)}
                 />
             )}
 
-            {sourceTab !== "best" && sourceTab !== "bestGp" && sourceTab !== "settings" && <>
+            {sourceTab !== "best" && sourceTab !== "bestGp" && sourceTab !== "settings" && sourceTab !== "quickStart" && <>
             {sourceTab === "moe" && (
                 <section className="vet-moe-search-panel">
                     <div>
@@ -534,7 +756,11 @@ export default function VeteransPage() {
                 </Alert>
             )}
 
-            {sourceTab === "owned" && !ownedVeterans.length && !error && !renderError && (
+            {sourceTab === "owned" && veteransLoading && !ownedVeterans.length && (
+                <Alert variant="info">Loading stored veterans...</Alert>
+            )}
+
+            {sourceTab === "owned" && !veteransLoading && !ownedVeterans.length && !error && !renderError && (
                 <>
                     <div className="upload-zone" onClick={() => fileInputRef.current?.click()}>
                         <div className="upload-icon">Upload</div>

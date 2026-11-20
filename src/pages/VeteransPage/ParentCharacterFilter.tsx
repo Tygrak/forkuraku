@@ -6,17 +6,34 @@ import { isPlayableCharacter } from "../../data/GameToraCharacterSkills";
 import { Veteran } from "./types";
 import "./VeteransPage.css";
 
+type SelectionMode = "character" | "card";
+
 interface ParentCharacterFilterProps {
     veterans: Veteran[];
     selected: number[];
-    onChange: (characterIds: number[]) => void;
+    onChange: (ids: number[]) => void;
     includeAllCharacters?: boolean;
+    selectionMode?: SelectionMode;
+    label?: string;
+    title?: string;
+    excludedIds?: number[];
+    excludedCharaIds?: number[];
 }
 
 type CharacterOption = {
     id: number;
+    charaId: number;
     name: string;
     count: number;
+};
+
+const EMPTY_IDS: number[] = [];
+
+const getCardLabel = (cardId: number): string => {
+    const charaId = Math.floor(cardId / 100);
+    const charaName = UMDatabaseWrapper.charas[charaId]?.name;
+    const cardName = UMDatabaseWrapper.cards[cardId]?.name;
+    return charaName && cardName ? `${charaName} — ${cardName}` : `Card ${cardId}`;
 };
 
 const ParentCharacterFilter: React.FC<ParentCharacterFilterProps> = ({
@@ -24,6 +41,11 @@ const ParentCharacterFilter: React.FC<ParentCharacterFilterProps> = ({
     selected,
     onChange,
     includeAllCharacters = false,
+    selectionMode = "character",
+    label = "Parent characters",
+    title = "Select parent characters",
+    excludedIds = EMPTY_IDS,
+    excludedCharaIds = EMPTY_IDS,
 }) => {
     const [show, setShow] = useState(false);
     const [search, setSearch] = useState("");
@@ -39,38 +61,95 @@ const ParentCharacterFilter: React.FC<ParentCharacterFilterProps> = ({
     const options = useMemo(() => {
         const byId = new Map<number, CharacterOption>();
 
-        for (const veteran of veterans) {
-            const id = Math.floor(veteran.card_id / 100);
-            const existing = byId.get(id);
-            if (existing) {
-                existing.count += 1;
-            } else {
-                byId.set(id, {
-                    id,
-                    name: UMDatabaseWrapper.charas[id]?.name ?? `Character ${id}`,
+        if (selectionMode === "card") {
+            for (const veteran of veterans) {
+                const cardId = veteran.card_id;
+                const existing = byId.get(cardId);
+                if (existing) {
+                    existing.count += 1;
+                    continue;
+                }
+
+                const charaId = Math.floor(cardId / 100);
+                const charaName = UMDatabaseWrapper.charas[charaId]?.name;
+                const cardName = UMDatabaseWrapper.cards[cardId]?.name;
+                if (!charaName || !cardName) continue;
+
+                byId.set(cardId, {
+                    id: cardId,
+                    charaId,
+                    name: `${charaName} — ${cardName}`,
                     count: 1,
                 });
             }
-        }
 
-        if (includeAllCharacters) {
-            for (const chara of Object.values(UMDatabaseWrapper.charas)) {
-                const id = chara.id;
-                if (id == null || byId.has(id) || !UMDatabaseWrapper.charaRelationTypes[id] || !isPlayableCharacter(id)) continue;
+            if (includeAllCharacters) {
+                for (const card of Object.values(UMDatabaseWrapper.cards)) {
+                    const cardId = card.id;
+                    if (cardId == null || byId.has(cardId) || !card.name) continue;
 
-                byId.set(id, {
-                    id,
-                    name: chara.name ?? `Character ${id}`,
-                    count: 0,
-                });
+                    const charaId = Math.floor(cardId / 100);
+                    const charaName = UMDatabaseWrapper.charas[charaId]?.name;
+                    if (!charaName || !isPlayableCharacter(charaId)) continue;
+
+                    byId.set(cardId, {
+                        id: cardId,
+                        charaId,
+                        name: `${charaName} — ${card.name}`,
+                        count: 0,
+                    });
+                }
+            }
+        } else {
+            for (const veteran of veterans) {
+                const id = Math.floor(veteran.card_id / 100);
+                const existing = byId.get(id);
+                if (existing) {
+                    existing.count += 1;
+                } else {
+                    byId.set(id, {
+                        id,
+                        charaId: id,
+                        name: UMDatabaseWrapper.charas[id]?.name ?? `Character ${id}`,
+                        count: 1,
+                    });
+                }
+            }
+
+            if (includeAllCharacters) {
+                for (const chara of Object.values(UMDatabaseWrapper.charas)) {
+                    const id = chara.id;
+                    if (id == null || byId.has(id) || !chara.name || !isPlayableCharacter(id)) continue;
+
+                    byId.set(id, {
+                        id,
+                        charaId: id,
+                        name: chara.name,
+                        count: 0,
+                    });
+                }
             }
         }
 
-        return Array.from(byId.values()).sort((a, b) => {
-            if (b.count !== a.count) return b.count - a.count;
-            return a.name.localeCompare(b.name);
-        });
-    }, [veterans, includeAllCharacters]);
+        const excludedCharaSet = new Set(excludedCharaIds);
+        if (selectionMode === "card") {
+            // The game cannot use two costumes of the same character as the two
+            // parents, so exclude the whole character when a costume is picked.
+            for (const id of excludedIds) {
+                excludedCharaSet.add(Math.floor(id / 100));
+            }
+        }
+
+        return Array.from(byId.values())
+            .filter(option =>
+                !excludedIds.includes(option.id)
+                && !excludedCharaSet.has(option.charaId),
+            )
+            .sort((a, b) => {
+                if (b.count !== a.count) return b.count - a.count;
+                return a.name.localeCompare(b.name);
+            });
+    }, [veterans, includeAllCharacters, selectionMode, excludedIds, excludedCharaIds]);
 
     const filteredOptions = useMemo(() => {
         const query = search.trim().toLowerCase();
@@ -80,8 +159,10 @@ const ParentCharacterFilter: React.FC<ParentCharacterFilterProps> = ({
     }, [options, search]);
 
     const selectedNames = useMemo(
-        () => selected.map(id => UMDatabaseWrapper.charas[id]?.name ?? `Character ${id}`),
-        [selected],
+        () => selected.map(id => selectionMode === "card"
+            ? getCardLabel(id)
+            : UMDatabaseWrapper.charas[id]?.name ?? `Character ${id}`),
+        [selected, selectionMode],
     );
 
     const toggleCharacter = (id: number) => {
@@ -103,7 +184,7 @@ const ParentCharacterFilter: React.FC<ParentCharacterFilterProps> = ({
                     size="sm"
                     onClick={() => setShow(true)}
                 >
-                    Parent characters{selected.length > 0 ? ` (${selected.length})` : ""}
+                    {label}{selected.length > 0 ? ` (${selected.length})` : ""}
                 </Button>
                 {selected.length > 0 && (
                     <div className="vet-parent-chips">
@@ -133,12 +214,12 @@ const ParentCharacterFilter: React.FC<ParentCharacterFilterProps> = ({
 
             <Modal show={show} onHide={() => setShow(false)} size="lg" scrollable>
                 <Modal.Header closeButton>
-                    <Modal.Title>Select parent characters</Modal.Title>
+                    <Modal.Title>{title}</Modal.Title>
                 </Modal.Header>
                 <Modal.Body>
                     <Form.Control
                         size="sm"
-                        placeholder="Search characters..."
+                        placeholder={selectionMode === "card" ? "Search characters or costumes..." : "Search characters..."}
                         value={search}
                         onChange={e => setSearch(e.target.value)}
                         className="mb-3"
@@ -155,7 +236,9 @@ const ParentCharacterFilter: React.FC<ParentCharacterFilterProps> = ({
                                     onClick={() => toggleCharacter(option.id)}
                                 >
                                     <img
-                                        src={AssetLoader.getCharaIcon(option.id)}
+                                        src={selectionMode === "card"
+                                            ? AssetLoader.getCharaThumb(option.id)
+                                            : AssetLoader.getCharaIcon(option.id)}
                                         alt=""
                                         onError={e => { (e.currentTarget as HTMLImageElement).style.opacity = "0"; }}
                                     />
@@ -169,7 +252,9 @@ const ParentCharacterFilter: React.FC<ParentCharacterFilterProps> = ({
                             );
                         })}
                         {filteredOptions.length === 0 && (
-                            <div className="text-muted">No characters found.</div>
+                            <div className="text-muted">
+                                {selectionMode === "card" ? "No costumes found." : "No characters found."}
+                            </div>
                         )}
                     </div>
                 </Modal.Body>
