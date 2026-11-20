@@ -23,6 +23,7 @@ type Props = {
     customScoringConfig: CustomScoringConfig;
     umaMoeApiKey: string;
     onSearch: (request: QuickStartRequest) => void;
+    onUploadVeterans: () => void;
     onOpenSettings: () => void;
     onOpenVeterans: () => void;
 };
@@ -33,6 +34,7 @@ const QuickStartPanel = ({
     customScoringConfig,
     umaMoeApiKey,
     onSearch,
+    onUploadVeterans,
     onOpenSettings,
     onOpenVeterans,
 }: Props) => {
@@ -101,21 +103,30 @@ const QuickStartPanel = ({
                 </div>
             </div>
 
-            {veterans.length === 0 && (
-                <Alert variant="info">
+            <div className="quick-start-roster">
+                <span className="best-combo-hint">
                     {veteransLoading
                         ? "Loading stored veterans..."
-                        : "Load a veterans file before searching."}
-                    {!veteransLoading && (
-                        <div className="quick-start-actions">
-                            <Button size="sm" variant="outline-info" onClick={onOpenSettings}>
-                                Open Settings
-                            </Button>
-                            <Button size="sm" variant="outline-secondary" onClick={onOpenVeterans}>
-                                Open My veterans
-                            </Button>
-                        </div>
-                    )}
+                        : veterans.length > 0
+                            ? `${veterans.length} veterans loaded.`
+                            : "No veterans loaded."}
+                </span>
+                <Button size="sm" variant="outline-info" onClick={onUploadVeterans}>
+                    {veterans.length > 0 ? "Replace veterans.json" : "Upload veterans.json"}
+                </Button>
+            </div>
+
+            {veterans.length === 0 && !veteransLoading && (
+                <Alert variant="info">
+                    Upload a veterans.json file above, or load one from the veterans tab.
+                    <div className="quick-start-actions">
+                        <Button size="sm" variant="outline-info" onClick={onOpenSettings}>
+                            Open Settings
+                        </Button>
+                        <Button size="sm" variant="outline-secondary" onClick={onOpenVeterans}>
+                            Open My veterans
+                        </Button>
+                    </div>
                 </Alert>
             )}
 

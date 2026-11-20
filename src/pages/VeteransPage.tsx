@@ -49,7 +49,7 @@ export default function VeteransPage() {
     const [ownedVeterans, setOwnedVeterans] = useState<Veteran[]>([]);
     const [veteransLoading, setVeteransLoading] = useState(true);
     const rosterTouchedRef = useRef(false);
-    const [sourceTab, setSourceTab] = useState<"quickStart" | "owned" | "moe" | "best" | "bestGp" | "settings">("owned");
+    const [sourceTab, setSourceTab] = useState<"quickStart" | "owned" | "moe" | "best" | "bestGp" | "settings">("quickStart");
     const [quickStartRequest, setQuickStartRequest] = useState<QuickStartPreset | null>(null);
     const [moeVeterans, setMoeVeterans] = useState<Veteran[]>([]);
     const [moeSearching, setMoeSearching] = useState(false);
@@ -221,7 +221,6 @@ export default function VeteransPage() {
                 rosterTouchedRef.current = true;
                 setOwnedVeterans(parsed);
                 setVeteransLoading(false);
-                setSourceTab("owned");
                 setError("");
                 void saveStoredVeterans(parsed).catch(err => {
                     setError(`Loaded veterans but could not save them: ${err instanceof Error ? err.message : String(err)}`);
@@ -572,6 +571,7 @@ export default function VeteransPage() {
                     customScoringConfig={customScoringConfig}
                     umaMoeApiKey={umaMoeApiKey}
                     onSearch={handleQuickStartSearch}
+                    onUploadVeterans={() => fileInputRef.current?.click()}
                     onOpenSettings={() => setSourceTab("settings")}
                     onOpenVeterans={() => setSourceTab("owned")}
                 />

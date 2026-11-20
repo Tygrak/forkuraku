@@ -1676,6 +1676,19 @@
   margin-bottom: 16px;
 }
 
+.quick-start-roster {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--haku-border);
+  border-radius: var(--haku-radius);
+  background: rgba(255, 255, 255, 0.025);
+}
+
 .quick-start-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
