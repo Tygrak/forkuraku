@@ -7,13 +7,14 @@ import {
     createPinkPresetMultipliers,
 } from "./customScoring";
 import ParentCharacterFilter from "./ParentCharacterFilter";
+import TargetUmaPicker from "./TargetUmaPicker";
 import { buildQuickStartPlan } from "./quickStartPlan";
 import {
     nextQuickStartPresetId,
     QuickStartMode,
     QuickStartRequest,
 } from "./quickStart";
-import { getTargetCardOptions, loadLastTargetUma } from "./targetOptions";
+import { loadLastTargetUma } from "./targetOptions";
 import { CustomScoringConfig, PinkPresetKey, SkillSparkStyle, Veteran } from "./types";
 import "./VeteransPage.css";
 
@@ -50,8 +51,6 @@ const QuickStartPanel = ({
         customScoringConfig.skillSparkStyle,
     );
 
-    const targetCardOptions = useMemo(() => getTargetCardOptions(), []);
-    const selectedTarget = targetCardOptions.find(option => option.id === targetCardId);
     const plan = useMemo(
         () => buildQuickStartPlan(targetCardId, pinkPreset, skillSparkStyle),
         [targetCardId, pinkPreset, skillSparkStyle],
@@ -156,24 +155,12 @@ const QuickStartPanel = ({
                     <label className="best-combo-label" htmlFor="quick-start-target">
                         Target Uma
                     </label>
-                    <Form.Select
+                    <TargetUmaPicker
                         id="quick-start-target"
-                        size="sm"
-                        value={targetCardId ?? ""}
-                        onChange={event => setTargetCardId(event.target.value ? Number(event.target.value) : null)}
-                    >
-                        <option value="">Select target Uma...</option>
-                        {targetCardOptions.map(option => (
-                            <option key={option.id} value={option.id}>
-                                {option.charaName} — {option.cardName}
-                            </option>
-                        ))}
-                    </Form.Select>
-                    {selectedTarget && (
-                        <p className="best-combo-hint">
-                            {selectedTarget.charaName} {selectedTarget.cardName}
-                        </p>
-                    )}
+                        selected={targetCardId}
+                        onChange={setTargetCardId}
+                        title="Select target Uma"
+                    />
                 </div>
 
                 <div className="quick-start-field">

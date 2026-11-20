@@ -1787,19 +1787,70 @@
   text-transform: uppercase;
 }
 
-.best-combo-target {
+.target-uma-trigger {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
-  color: var(--haku-text-secondary);
-  font-size: 0.85rem;
+  width: 100%;
+  min-height: 40px;
+  padding: 5px 8px;
+  border: 1px solid var(--haku-border);
+  border-radius: var(--haku-radius);
+  background: var(--haku-bg-2);
+  color: var(--haku-text-primary);
+  text-align: left;
+  transition: border-color var(--haku-transition), box-shadow var(--haku-transition);
 }
 
-.best-combo-target-img {
-  width: 34px;
-  height: 34px;
+.target-uma-trigger:hover,
+.target-uma-trigger:focus-visible {
+  border-color: var(--haku-border-accent);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.18);
+}
+
+.target-uma-trigger-img {
+  width: 32px;
+  height: 32px;
   object-fit: contain;
+  flex-shrink: 0;
+}
+
+.target-uma-trigger-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.target-uma-trigger-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-uma-trigger-card {
+  font-size: 0.72rem;
+  color: var(--haku-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-uma-placeholder {
+  flex: 1;
+  color: var(--haku-text-muted);
+  font-size: 0.82rem;
+}
+
+.target-uma-caret {
+  margin-left: auto;
+  color: var(--haku-text-muted);
+  font-size: 0.8rem;
+  flex-shrink: 0;
 }
 
 .best-combo-chip-groups {

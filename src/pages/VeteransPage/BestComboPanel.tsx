@@ -1,19 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Alert, Button, ButtonGroup, Form } from "react-bootstrap";
-import AssetLoader from "../../data/AssetLoader";
-import UMDatabaseWrapper from "../../data/UMDatabaseWrapper";
 import { CustomScoringConfig, BaseFilter, Veteran } from "./types";
 import { formatCardName, getCardName, getCharaImageUrl, getFactorColor, getRankGradeLabel } from "./VeteransUIHelper";
 import CustomScoringPanel from "./CustomScoringPanel";
 import FilterToolbar from "./FilterToolbar";
 import ActiveFiltersList from "./ActiveFiltersList";
 import ParentCharacterFilter from "./ParentCharacterFilter";
-import {
-    getTargetCardOptions,
-    LAST_TARGET_UMA_KEY,
-    loadLastTargetUma,
-    TargetCardOption,
-} from "./targetOptions";
+import { LAST_TARGET_UMA_KEY, loadLastTargetUma } from "./targetOptions";
+import TargetUmaPicker from "./TargetUmaPicker";
 import type { QuickStartPreset } from "./quickStart";
 import {
     APTITUDE_GROUP_LABELS,
@@ -451,8 +445,6 @@ const BestComboPanel = ({
         }
     }, [targetCardId]);
 
-    const targetCardOptions = useMemo<TargetCardOption[]>(() => getTargetCardOptions(), []);
-
     const evaluationVeterans = useMemo(
         () => includeMoeParents && moeVeterans.length > 0
             ? [...veterans, ...moeVeterans]
@@ -721,34 +713,13 @@ const BestComboPanel = ({
                             <label className="best-combo-label" htmlFor="best-combo-target">
                                 {isGpMode ? "Target GP Uma" : "Target Uma"}
                             </label>
-                            <Form.Select
+                            <TargetUmaPicker
                                 id="best-combo-target"
-                                size="sm"
-                                value={targetCardId ?? ""}
-                                onChange={event => setTargetCardId(event.target.value ? Number(event.target.value) : null)}
-                            >
-                                <option value="">Select target {isGpMode ? "GP " : ""}Uma...</option>
-                                {targetCardOptions.map(option => (
-                                    <option key={option.id} value={option.id}>
-                                        {option.charaName} — {option.cardName}
-                                    </option>
-                                ))}
-                            </Form.Select>
-                            {targetCardId !== null && targetCharaId !== null && (
-                                <div className="best-combo-target">
-                                    <img
-                                        className="best-combo-target-img"
-                                        src={AssetLoader.getCharaIcon(targetCharaId)}
-                                        alt={UMDatabaseWrapper.charas[targetCharaId]?.name ?? "Target Uma"}
-                                        onError={event => { (event.target as HTMLImageElement).style.opacity = "0"; }}
-                                    />
-                                    <span>
-                                        {UMDatabaseWrapper.charas[targetCharaId]?.name ?? `Chara ${targetCharaId}`}
-                                        {" "}
-                                        {UMDatabaseWrapper.cards[targetCardId]?.name ?? ""}
-                                    </span>
-                                </div>
-                            )}
+                                selected={targetCardId}
+                                onChange={setTargetCardId}
+                                placeholder={`Select target ${isGpMode ? "GP " : ""}Uma...`}
+                                title={`Select target ${isGpMode ? "GP " : ""}Uma`}
+                            />
                         </div>
 
                         {!isGpMode && (
